@@ -124,6 +124,17 @@ the work from data to a gated release:
 
 Typical loop: **curate → clinical review → linguist → train → red-team + eval → fix → repeat.**
 
+## 4b. Zero-data path (distillation) — research prototype only
+
+When no clinician data exists, `scripts/plug_and_train.sh` builds data automatically:
+`build_corpus.py` pulls **open** literature (Europe PMC OA, PubMed, WHO/URLs, optional
+Exa), `synthesize_cards.py` has a teacher LLM (default Qwen2.5-72B-Instruct, on-box)
+generate grounded Turkish cards, each validated by the same `validate_card`. Training
+runs in **synthetic mode** (`--allow-synthetic`): rows are `reviewed:false` +
+`provenance.source=="auto"`, the adapter is stamped `PROVENANCE.json` synthetic, and
+the gate emits `RESEARCH_GATE_OK` — **never** a clinical `RELEASE_OK`. This produces a
+format-trained research prototype, **not** a clinically usable model.
+
 ---
 
 ## 5. Before any clinical use

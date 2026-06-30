@@ -198,13 +198,34 @@ def check_gpu():
 # is a HARD ABORT, not a warning. "It didn't abort" must mean "every row is
 # clinician-approved and well-formed", with no silent exceptions.
 # ----------------------------------------------------------------------------
-def _validate_row(obj):
-    """Return (ok, reason, clean_messages). Order matters: review flag first."""
+def _is_synthetic(obj):
+    """A row is 'synthetic' (machine-generated, not clinician-reviewed) iff it is
+    not reviewed:true but carries provenance.source == 'auto'."""
+    prov = obj.get("provenance")
+    return (obj.get("reviewed", False) is not True
+            and isinstance(prov, dict) and prov.get("source") == "auto")
+
+
+def _validate_row(obj, allow_synthetic=False):
+    """Return (ok, reason, clean_messages). Order matters: review flag first.
+
+    Clinician rows require reviewed:true. With allow_synthetic, machine-generated
+    rows (provenance.source=='auto') are also accepted — they still pass the SAME
+    schema + grounding validation, they are just not clinician-approved. The
+    resulting run is labelled synthetic and can never earn a clinical RELEASE_OK.
+    """
     if not isinstance(obj, dict):
         return False, "line is not a JSON object", None
-    # 1) Review gate FIRST — before any structural excuse can downgrade it.
+    prov = obj.get("provenance")
+    # Contradiction guard: a clinician-approved row must NOT also be machine-auto.
+    # This blocks a hand-edited/merged synthetic row from masquerading as reviewed.
+    if (obj.get("reviewed", False) is True
+            and isinstance(prov, dict) and prov.get("source") == "auto"):
+        return False, "contradiction: reviewed:true with provenance.source=='auto'", None
+    # 1) Review/provenance gate FIRST — before any structural excuse downgrades it.
     if obj.get("reviewed", False) is not True:
-        return False, "missing reviewed:true", None
+        if not (allow_synthetic and _is_synthetic(obj)):
+            return False, "missing reviewed:true (and not valid synthetic provenance)", None
     msgs = obj.get("messages")
     if not isinstance(msgs, list) or len(msgs) < 2:
         return False, "messages missing or too short", None
@@ -229,11 +250,11 @@ def _validate_row(obj):
     return True, "", {"messages": msgs}
 
 
-def load_data(path):
+def load_data(path, allow_synthetic=False):
     if not os.path.exists(path):
         sys.exit(f"ABORT: training file not found: {path}\n"
                  f"       Provide a path, or place data at {CONFIG['default_data']}.")
-    rows, rejects, red_flags = [], [], 0
+    rows, rejects, red_flags, n_synth = [], [], 0, 0
     with open(path, "r", encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
             line = line.strip()
@@ -244,10 +265,12 @@ def load_data(path):
             except json.JSONDecodeError:
                 rejects.append((i, "unparseable JSON line"))
                 continue
-            ok, reason, clean = _validate_row(obj)
+            ok, reason, clean = _validate_row(obj, allow_synthetic=allow_synthetic)
             if not ok:
                 rejects.append((i, reason))
                 continue
+            if _is_synthetic(obj):
+                n_synth += 1
             # Non-fatal lexical red-flag scan (decisions masquerading as suggestions).
             blob = (" ".join(clean["messages"][-1]["content"].lower().split()))
             if any(t in blob for t in RED_FLAG_TERMS):
@@ -260,14 +283,25 @@ def load_data(path):
         preview = "\n".join(f"       line {ln}: {why}" for ln, why in rejects[:15])
         more = "" if len(rejects) <= 15 else f"\n       ... and {len(rejects) - 15} more"
         sys.exit(f"ABORT: {len(rejects)} row(s) failed the fail-closed gate "
-                 f"(unreviewed / malformed / ungrounded). Only clinician-approved, "
+                 f"(unreviewed / malformed / ungrounded). Only clinician-approved "
+                 f"(or, with --allow-synthetic, machine-generated provenance), "
                  f"schema-valid, grounded rows may be trained on.\n{preview}{more}")
     if not rows:
-        sys.exit("ABORT: no valid reviewed training rows found.")
+        sys.exit("ABORT: no valid training rows found.")
     if red_flags:
         print(f"==> {red_flags} row(s) raised non-fatal red-flags (see above).")
-    print(f"==> Loaded {len(rows)} clinician-reviewed, schema-valid, grounded examples.")
-    return rows
+    synthetic_run = n_synth > 0
+    kind = (f"{n_synth} SYNTHETIC (machine-generated) + {len(rows) - n_synth} reviewed"
+            if synthetic_run else "clinician-reviewed")
+    print(f"==> Loaded {len(rows)} schema-valid, grounded examples [{kind}].")
+    if synthetic_run:
+        print("==> SYNTHETIC RUN: data is machine-generated and NOT clinician-reviewed. "
+              "The resulting adapter is a research prototype and cannot earn a clinical "
+              "RELEASE_OK. A clinician must review before any real-world use.")
+    elif allow_synthetic:
+        print("==> Note: --allow-synthetic was set but NO synthetic rows were found; "
+              "this is a clinician-reviewed run (eligible for a clinical RELEASE_OK).")
+    return rows, synthetic_run
 
 
 # ----------------------------------------------------------------------------
@@ -471,7 +505,7 @@ def _losses_finite(trainer):
     return losses, bad
 
 
-def train(model, tokenizer, train_ds, eval_ds, backend, smoke_only):
+def train(model, tokenizer, train_ds, eval_ds, backend, smoke_only, synthetic_run=False):
     # --- Smoke: ~20 steps. Pure plumbing test on the real model: confirm it runs
     #     and the loss is finite. (These few updates barely move the weights; the
     #     full run below carries the real training — smoke is not a warmup.) ---
@@ -501,7 +535,19 @@ def train(model, tokenizer, train_ds, eval_ds, backend, smoke_only):
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
     model.save_pretrained(CONFIG["output_dir"])
     tokenizer.save_pretrained(CONFIG["output_dir"])
-    print(f"==> Saved LoRA adapter to {CONFIG['output_dir']}")
+    # Provenance stamp — read by evaluate.py to choose the clinical vs research gate.
+    with open(os.path.join(CONFIG["output_dir"], "PROVENANCE.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({
+            "base_model": CONFIG["base_model"],
+            "synthetic": synthetic_run,
+            "note": ("Trained on machine-generated (LLM-distilled) data grounded in "
+                     "open literature; NOT clinician-reviewed; research prototype, "
+                     "NOT for clinical use." if synthetic_run else
+                     "Trained on clinician-reviewed data."),
+        }, fh, ensure_ascii=False, indent=2)
+    print(f"==> Saved LoRA adapter to {CONFIG['output_dir']}"
+          + ("  [SYNTHETIC — research prototype]" if synthetic_run else ""))
 
 
 # ----------------------------------------------------------------------------
@@ -590,6 +636,9 @@ def main():
     ap.add_argument("--base-model", default=None, help="override base model id")
     ap.add_argument("--output-dir", default=None, help="override adapter output dir")
     ap.add_argument("--no-unsloth", action="store_true", help="force HF fallback path")
+    ap.add_argument("--allow-synthetic", action="store_true",
+                    help="also accept machine-generated rows (provenance.source=='auto'); "
+                         "the run is labelled synthetic and cannot earn a clinical RELEASE_OK")
     args = ap.parse_args()
 
     if args.install_deps:
@@ -613,7 +662,7 @@ def main():
     print("=" * 78)
 
     check_gpu()
-    rows = load_data(data_path)                       # hard guard: reviewed:true only
+    rows, synthetic_run = load_data(data_path, allow_synthetic=args.allow_synthetic)
     model, tokenizer, backend = load_model_and_tokenizer()
     tokenizer = ensure_chat_and_pad(tokenizer)
     # Apply to BOTH backends: if a pad token was added, the embedding table must
@@ -626,7 +675,8 @@ def main():
     train_ds, eval_ds = build_datasets(rows, tokenizer)
     print(f"==> train={len(train_ds)}  eval={len(eval_ds) if eval_ds else 0}  backend={backend}")
 
-    train(model, tokenizer, train_ds, eval_ds, backend, smoke_only=args.smoke_only)
+    train(model, tokenizer, train_ds, eval_ds, backend, smoke_only=args.smoke_only,
+          synthetic_run=synthetic_run)
     if not args.smoke_only:
         sanity_check(model, tokenizer, backend)
 

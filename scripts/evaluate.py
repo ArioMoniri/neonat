@@ -286,28 +286,51 @@ def main():
     with open(os.path.join(args.adapter, "metrics.json"), "w", encoding="utf-8") as fh:
         json.dump({"metrics": metrics, "results": results}, fh, ensure_ascii=False, indent=2)
 
-    gate_ok = os.path.join(args.adapter, "RELEASE_OK")
-    gate_block = os.path.join(args.adapter, "RELEASE_BLOCKED")
-    for p in (gate_ok, gate_block):
+    # A SYNTHETIC adapter (trained on machine-generated data) can never earn a
+    # clinical RELEASE_OK — it gets a RESEARCH gate instead, even if it passes.
+    # FAIL CLOSED: a missing or unreadable PROVENANCE.json is treated as SYNTHETIC,
+    # so the most safety-critical decision here never defaults to clinical release.
+    prov_path = os.path.join(args.adapter, "PROVENANCE.json")
+    if not os.path.exists(prov_path):
+        synthetic = True
+        print("==> WARNING: no PROVENANCE.json on the adapter — treating as SYNTHETIC "
+              "(research gate). A clinical RELEASE_OK requires a provenance stamp from "
+              "a clinician-reviewed training run.")
+    else:
+        try:
+            synthetic = bool(json.load(open(prov_path, encoding="utf-8")).get("synthetic"))
+        except Exception as e:  # noqa: BLE001
+            synthetic = True
+            print(f"==> WARNING: PROVENANCE.json unreadable ({e}) — failing closed to "
+                  "the SYNTHETIC research gate.")
+    ok_name = "RESEARCH_GATE_OK" if synthetic else "RELEASE_OK"
+    block_name = "RESEARCH_GATE_BLOCKED" if synthetic else "RELEASE_BLOCKED"
+    gate_ok = os.path.join(args.adapter, ok_name)
+    gate_block = os.path.join(args.adapter, block_name)
+    # Clear ALL prior gate files so a stale clinical/research verdict can't linger.
+    for nm in ("RELEASE_OK", "RELEASE_BLOCKED", "RESEARCH_GATE_OK", "RESEARCH_GATE_BLOCKED"):
+        p = os.path.join(args.adapter, nm)
         if os.path.exists(p):
             os.remove(p)
 
     if passed:
+        note = ("RESEARCH gate passed. This adapter was trained on machine-generated "
+                "data and is a research prototype — NOT FOR CLINICAL USE. Clinician "
+                "review + real reviewed data are required for any clinical release."
+                if synthetic else
+                "Automated gate passed. Still requires clinician sign-off before use.")
         with open(gate_ok, "w", encoding="utf-8") as fh:
-            json.dump({"status": "RELEASE_OK", "metrics": metrics,
-                       "note": "Automated gate passed. Still requires clinician "
-                               "sign-off before any real-world use."},
-                      fh, ensure_ascii=False, indent=2)
-        print(f"\n==> RELEASE_OK written to {gate_ok}")
-        print("    NOTE: the automated gate is necessary, not sufficient. A "
-              "clinician (neonatologist + perinatologist) must still sign off.")
+            json.dump({"status": ok_name, "synthetic": synthetic,
+                       "metrics": metrics, "note": note}, fh, ensure_ascii=False, indent=2)
+        print(f"\n==> {ok_name} written to {gate_ok}")
+        print(f"    NOTE: {note}")
         return 0
     else:
         with open(gate_block, "w", encoding="utf-8") as fh:
-            json.dump({"status": "RELEASE_BLOCKED", "reasons": reasons,
+            json.dump({"status": block_name, "synthetic": synthetic, "reasons": reasons,
                        "metrics": metrics, "critical_failure_ids": metrics["critical_failure_ids"]},
                       fh, ensure_ascii=False, indent=2)
-        print(f"\n==> RELEASE_BLOCKED written to {gate_block}")
+        print(f"\n==> {block_name} written to {gate_block}")
         for r in reasons:
             print(f"    - {r}")
         return 1

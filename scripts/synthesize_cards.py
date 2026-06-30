@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+synthesize_cards.py — distill grounded Turkish suggestion-cards with a teacher LLM.
+================================================================================
+For each open-literature passage, a strong open TEACHER model (default
+Qwen2.5-72B-Instruct, 4-bit on the H200) generates:
+  • a short SYNTHETIC Turkish neonatal/perinatal patient vignette, and
+  • a suggestion-card grounded ONLY in that passage (questions + tests to consider,
+    missing data, kaynak, caution) — never a diagnosis/dose/order.
+
+Each generated card is validated with the SAME validator training uses
+(train_lora.validate_card). Invalid/ungrounded generations are discarded. Output
+rows are written as SYNTHETIC (reviewed:false + provenance.source=="auto"), so
+train_lora must be run with --allow-synthetic and the result is a research
+prototype — NOT clinician-reviewed, NOT for clinical use.
+
+Usage:
+    python synthesize_cards.py --passages data/corpus/passages.jsonl \
+        --out data/processed/task_sft.synth.jsonl \
+        --teacher Qwen/Qwen2.5-72B-Instruct --limit 400
+    python synthesize_cards.py --passages ... --out ... --dry-run   # stub teacher
+"""
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_train_module():
+    path = os.path.join(_HERE, "train_lora.py")
+    spec = importlib.util.spec_from_file_location("train_lora", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+TL = _load_train_module()
+GUARDRAIL_SYSTEM = TL.GUARDRAIL_SYSTEM
+DEFAULT_UYARI = ("Bu öneriler yalnızca verilen kılavuza dayanır ve klinik karar "
+                 "yerine geçmez; nihai değerlendirme hekime aittir.")
+
+TEACHER_SYSTEM = (
+    "Sen, Türkçe konuşan bir tıbbi veri etiketleme uzmanısın. Görevin, verilen "
+    "İNGİLİZCE/Türkçe kılavuz pasajından, neonatoloji/perinatoloji için bir klinik "
+    "karar destek 'öneri kartı' eğitim örneği üretmektir. "
+    "SADECE geçerli JSON üret, başka hiçbir şey yazma. Kurallar: "
+    "(1) Önce pasajla ilgili KISA, sentetik (gerçek olmayan) bir Türkçe hasta "
+    "vinyeti yaz (vignette). "
+    "(2) Öneriler SADECE pasajdaki bilgiye dayanmalı. "
+    "(3) Asla tanı koyma, ilaç/doz/order yazma; sadece SORULACAK sorular ve "
+    "DEĞERLENDİRİLECEK tetkikler öner. "
+    "(4) Pasajda olmayan kritik verileri 'eksik_veriler' altında belirt. "
+    "(5) 'kaynak' alanına sana verilen passage_id'yi aynen yaz. "
+    "Çıktı şeması: {\"vignette\":\"...\",\"onerilen_sorular\":[],"
+    "\"onerilen_tetkikler\":[],\"eksik_veriler\":[],\"kaynak\":\"<passage_id>\","
+    "\"uyari\":\"...\"}"
+)
+
+
+def build_teacher_prompt(passage, passage_id):
+    return (f"passage_id: {passage_id}\n\nKılavuz pasajı:\n\"\"\"\n{passage}\n\"\"\"\n\n"
+            f"Yukarıdaki şemada, SADECE JSON olarak bir öneri kartı üret.")
+
+
+# ----------------------------------------------------------------------------
+def extract_json(text):
+    """Pull the first balanced {...} object out of a model response. If the teacher
+    output was truncated (unbalanced), attempt a salvage by closing the open string
+    and braces — recovers many otherwise-dropped generations."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    stack, in_str, esc = [], False, False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c in "{[":
+                stack.append(c)
+            elif c in "}]":
+                if stack:
+                    stack.pop()
+                if not stack:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+    # Salvage a truncated object/array: close the dangling string, drop a trailing
+    # partial token, then close every open bracket/brace in reverse order.
+    tail = text[start:]
+    if in_str:
+        tail += '"'
+    if stack:
+        tail = re.sub(r',\s*"[^"]*"\s*:?\s*$', "", tail)  # partial "key":
+        tail = re.sub(r',\s*$', "", tail)
+        tail += "".join("}" if ch == "{" else "]" for ch in reversed(stack))
+    try:
+        return json.loads(tail)
+    except json.JSONDecodeError:
+        return None
+
+
+def to_card(obj, passage_id):
+    """Coerce a teacher object into a clean 5-key card grounded on passage_id."""
+    if not isinstance(obj, dict):
+        return None
+    card = {
+        "onerilen_sorular": obj.get("onerilen_sorular", []),
+        "onerilen_tetkikler": obj.get("onerilen_tetkikler", []),
+        "eksik_veriler": obj.get("eksik_veriler", []),
+        "kaynak": passage_id,                       # force correct grounding
+        "uyari": (obj.get("uyari") or DEFAULT_UYARI),
+    }
+    for k in ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler"):
+        v = card[k]
+        if isinstance(v, str):
+            v = [v]
+        card[k] = [str(x).strip() for x in v if str(x).strip()][:8]
+    return card
+
+
+def build_row(card, vignette, passage, src):
+    user = (f"Hasta bağlamı: {vignette.strip()}. "
+            f"Kılavuz pasajı: {passage.strip()}")
+    return {
+        "messages": [
+            {"role": "system", "content": GUARDRAIL_SYSTEM},
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": json.dumps(card, ensure_ascii=False)},
+        ],
+        "reviewed": False,
+        "provenance": {
+            "source": "auto", "teacher": src.get("teacher"),
+            "passage_id": src.get("passage_id"), "passage_source": src.get("source"),
+            "license": src.get("license"), "url": src.get("url"),
+        },
+    }
+
+
+# ----------------------------------------------------------------------------
+def load_teacher(model_id):
+    import torch
+    from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                              BitsAndBytesConfig)
+    print(f"==> Loading teacher {model_id} in 4-bit (first run downloads weights)...")
+    bnb = BitsAndBytesConfig(
+        load_in_4bit=True, bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
+    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, quantization_config=bnb, torch_dtype=torch.bfloat16, device_map="auto")
+    model.eval()
+    return model, tok
+
+
+def teacher_generate(model, tok, passage, passage_id, max_new_tokens=512):
+    import torch
+    msgs = [{"role": "system", "content": TEACHER_SYSTEM},
+            {"role": "user", "content": build_teacher_prompt(passage, passage_id)}]
+    dev = model.get_input_embeddings().weight.device
+    ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                  return_tensors="pt").to(dev)
+    with torch.no_grad():
+        out = model.generate(ids, max_new_tokens=max_new_tokens, do_sample=True,
+                             temperature=0.7, top_p=0.9,
+                             pad_token_id=(tok.pad_token_id or tok.eos_token_id),
+                             eos_token_id=tok.eos_token_id)
+    return tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+
+
+# ----------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(description="Distill grounded TR cards with a teacher LLM.")
+    ap.add_argument("--passages", required=True)
+    ap.add_argument("--out", default="data/processed/task_sft.synth.jsonl")
+    ap.add_argument("--teacher", default="Qwen/Qwen2.5-72B-Instruct")
+    ap.add_argument("--limit", type=int, default=400, help="max passages to process")
+    ap.add_argument("--max-new-tokens", type=int, default=1024,
+                    help="raise if cards get truncated (vignette+lists can be long)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="use a stub teacher (no model/GPU) to test the pipeline")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.passages):
+        sys.exit(f"ABORT: passages file not found: {args.passages} (run build_corpus.py)")
+    passages = [json.loads(l) for l in open(args.passages, encoding="utf-8") if l.strip()]
+    passages = passages[:args.limit]
+    if not passages:
+        sys.exit("ABORT: no passages to process.")
+    print(f"==> Synthesizing cards for {len(passages)} passage(s) with {args.teacher}")
+
+    if args.dry_run:
+        def gen(passage, pid):
+            return json.dumps({
+                "vignette": "Sentetik vinyet: term yenidoğan, postnatal 2. gün.",
+                "onerilen_sorular": ["Postnatal kaçıncı gün?", "Beslenme öyküsü nasıl?"],
+                "onerilen_tetkikler": ["Total serum bilirubin"],
+                "eksik_veriler": ["gebelik haftası"],
+                "kaynak": pid, "uyari": DEFAULT_UYARI}, ensure_ascii=False)
+        teacher_name = f"{args.teacher} (dry-run stub)"
+    else:
+        model, tok = load_teacher(args.teacher)
+        gen = lambda passage, pid: teacher_generate(  # noqa: E731
+            model, tok, passage, pid, args.max_new_tokens)
+        teacher_name = args.teacher
+
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    kept, dropped = 0, 0
+    drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "decision_like": 0}
+    with open(args.out, "w", encoding="utf-8") as out_fh:
+        for i, p in enumerate(passages, 1):
+            pid = p.get("passage_id", f"p{i}")
+            try:
+                raw = gen(p["passage"], pid)
+            except Exception as e:  # noqa: BLE001
+                print(f"    [{i}/{len(passages)}] {pid}: generation error: {e}")
+                drops["gen_error"] += 1
+                dropped += 1
+                continue
+            obj = extract_json(raw)
+            card = to_card(obj, pid) if obj else None
+            if card is None:
+                drops["no_json"] += 1
+                dropped += 1
+                continue
+            ok, reason = TL.validate_card(card)
+            if not ok:
+                drops["invalid_card"] += 1
+                dropped += 1
+                continue
+            # Reject decision-like leakage (dose/diagnosis) before it trains in.
+            blob = json.dumps(card, ensure_ascii=False)
+            if TL.looks_like_decision(blob):
+                drops["decision_like"] += 1
+                dropped += 1
+                continue
+            vignette = (obj.get("vignette") or "Sentetik hasta bağlamı")
+            row = build_row(card, vignette, p["passage"],
+                            {**p, "teacher": teacher_name})
+            out_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            kept += 1
+            if i % 25 == 0 or i == len(passages):
+                print(f"    [{i}/{len(passages)}] kept={kept} dropped={dropped} {drops}")
+
+    if kept == 0:
+        sys.exit("ABORT: no valid cards produced. Drop reasons: "
+                 f"{drops}. Try a stronger teacher, raise --max-new-tokens, or check passages.")
+    yield_pct = round(100 * kept / max(1, kept + dropped), 1)
+    print(f"==> Wrote {kept} SYNTHETIC rows to {args.out} "
+          f"(dropped {dropped}: {drops}; yield {yield_pct}%).")
+    print("==> These are machine-generated. Train with: "
+          f"scripts/run_train.sh {args.out} synth-run --allow-synthetic")
+    print("==> The resulting adapter is a RESEARCH PROTOTYPE — not for clinical use.")
+
+
+if __name__ == "__main__":
+    main()

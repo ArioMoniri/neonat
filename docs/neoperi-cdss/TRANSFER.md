@@ -9,6 +9,36 @@ so deleting it all is `rm -rf ~/neoperi-cdss`.**
 
 ---
 
+## 0. Zero-data "plug & train" (no clinician data, no API keys)
+
+If you have **no clinician-reviewed data**, use the distillation pipeline: it pulls
+open neonatology/perinatology literature, has a teacher LLM (default
+`Qwen/Qwen2.5-72B-Instruct`, runs on your H200) generate grounded Turkish cards,
+validates them, and fine-tunes Kumru-2B in **synthetic mode**.
+
+```bash
+# on the server, after setup_server.sh:
+bash scripts/plug_and_train.sh --plumbing          # offline dry-run of the data path
+bash scripts/plug_and_train.sh                     # the real thing (downloads the teacher)
+
+# tune it via env vars:
+SOURCES="europepmc,pubmed,urls" URLS_FILE=data/corpus/guideline_urls.txt \
+LIMIT=600 TEACHER="Qwen/Qwen2.5-72B-Instruct" RUN=synth-01 \
+  bash scripts/plug_and_train.sh
+```
+
+> ⚠️ **Research prototype only.** The model is trained on **machine-generated**
+> data, so it is NOT clinician-reviewed and **NOT for clinical use**. It gets a
+> `RESEARCH_GATE_OK` (never a clinical `RELEASE_OK`), and the adapter carries a
+> `PROVENANCE.json` marking it synthetic. To make it clinical-grade, feed real
+> clinician-reviewed data via `author_cards.py` and train without
+> `--allow-synthetic` (steps 4–6 below).
+
+The steps below (manual bundle → train → gate) are the underlying pieces; section
+0 just chains them with auto-built data.
+
+---
+
 ## 1. Build the bundle (LOCAL, in this repo)
 
 ```bash
