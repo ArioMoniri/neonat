@@ -1,0 +1,20 @@
+# Pinned, reproducible dependency matrix for the Kumru-2B TR neoperi QLoRA
+# fine-tune + eval. Installed into a project-local venv by scripts/setup_server.sh.
+#
+# torch is pinned to a CUDA 12.4 build via the PyTorch index; a cu124 wheel runs
+# fine on the H200's 12.8 driver (drivers are backward-compatible within CUDA 12).
+# Hopper (sm_90) is supported by torch >= 2.1, so 2.4.1 has the right kernels.
+#
+# NOTE: the training code uses transformers.Trainer (NOT trl.SFTTrainer), so TRL
+# is intentionally NOT required here. Unsloth (the optional fast path) is installed
+# separately by setup_server.sh and brings its own deps; for a strictly
+# reproducible run use the HF path (train with --no-unsloth).
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.4.1
+transformers==4.44.2
+datasets==2.21.0
+accelerate==0.34.2
+peft==0.13.2
+bitsandbytes==0.44.1
+sentencepiece==0.2.0
+protobuf==4.25.3

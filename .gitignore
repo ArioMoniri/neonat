@@ -1,0 +1,22 @@
+# ---- tooling / generated ----
+.claude-flow/
+dist/
+.venv/
+.hf_cache/
+state/
+env.sh
+models/
+**/__pycache__/
+*.pyc
+*.log
+
+# ---- Clinician / PHI data: NEVER commit. Track only *.example.jsonl ----
+data/processed/*.jsonl
+!data/processed/*.example.jsonl
+data/processed/manifest.csv
+data/staging/
+data/eval/*.jsonl
+
+# real red-team sets may encode sensitive scenarios; keep only the example
+data/redteam/*.jsonl
+!data/redteam/*.example.jsonl
