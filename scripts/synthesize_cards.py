@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -171,15 +172,19 @@ def teacher_generate(model, tok, passage, passage_id, max_new_tokens=512):
     import torch
     msgs = [{"role": "system", "content": TEACHER_SYSTEM},
             {"role": "user", "content": build_teacher_prompt(passage, passage_id)}]
+    # return_dict=True gives input_ids AND attention_mask (more correct than a bare
+    # tensor, avoids pad/mask warnings). Place every tensor on the model's device.
+    enc = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                  return_tensors="pt", return_dict=True)
     dev = model.get_input_embeddings().weight.device
-    ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
-                                  return_tensors="pt").to(dev)
+    enc = {k: v.to(dev) for k, v in enc.items()}
+    n_in = enc["input_ids"].shape[1]
     with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=max_new_tokens, do_sample=True,
+        out = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=True,
                              temperature=0.7, top_p=0.9,
                              pad_token_id=(tok.pad_token_id or tok.eos_token_id),
                              eos_token_id=tok.eos_token_id)
-    return tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+    return tok.decode(out[0][n_in:], skip_special_tokens=True)
 
 
 # ----------------------------------------------------------------------------
@@ -217,6 +222,25 @@ def main():
         gen = lambda passage, pid: teacher_generate(  # noqa: E731
             model, tok, passage, pid, args.max_new_tokens)
         teacher_name = args.teacher
+        # PREFLIGHT: generate ONE card and surface the REAL error/traceback before
+        # grinding the whole corpus. A failure here shows exactly what's wrong.
+        print("==> Preflight: generating one card to validate the teacher...")
+        try:
+            probe = gen(passages[0]["passage"], passages[0].get("passage_id", "p1"))
+            print(f"    preflight OK ({len(probe)} chars). First 200: {probe[:200]!r}")
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            sys.exit(
+                "\nABORT: teacher generation failed on the first passage (real "
+                "traceback above).\nMost common causes & fixes:\n"
+                "  • GPU/VRAM: the 72B may not fit your MIG slice alongside the KV "
+                "cache. Try a smaller teacher:\n"
+                "      TEACHER=Qwen/Qwen2.5-32B-Instruct bash scripts/plug_and_train.sh\n"
+                "    or lower the token budget: --max-new-tokens 512\n"
+                "  • If it's a device/offload error ('expected all tensors on the same "
+                "device'), the model partially offloaded to CPU — use a smaller teacher.\n"
+                "  • Re-running is cheap: the corpus and teacher weights are already "
+                "cached; just re-run synthesize_cards.py on the existing passages file.")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     kept, dropped = 0, 0
@@ -227,9 +251,22 @@ def main():
             try:
                 raw = gen(p["passage"], pid)
             except Exception as e:  # noqa: BLE001
-                print(f"    [{i}/{len(passages)}] {pid}: generation error: {e}")
                 drops["gen_error"] += 1
                 dropped += 1
+                # Show the REAL error (type + repr), and a full traceback for the
+                # first one — str(e) can be empty for some exception types.
+                print(f"    [{i}/{len(passages)}] {pid}: generation error: "
+                      f"{type(e).__name__}: {e!r}")
+                if drops["gen_error"] == 1:
+                    traceback.print_exc()
+                # Fail fast: don't waste the whole corpus on a systemic failure.
+                if drops["gen_error"] >= 5 and kept == 0:
+                    sys.exit(
+                        "ABORT: teacher generation failed on the first 5 passages "
+                        "(traceback above). This is a systemic issue, not bad data. "
+                        "Try a smaller teacher (TEACHER=Qwen/Qwen2.5-32B-Instruct) or "
+                        "--max-new-tokens 512. Corpus + weights are cached, so re-running "
+                        "is fast.")
                 continue
             obj = extract_json(raw)
             card = to_card(obj, pid) if obj else None
