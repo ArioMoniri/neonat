@@ -9,12 +9,18 @@
 # The result is a RESEARCH PROTOTYPE trained on machine-generated data — it is
 # NOT clinician-reviewed and NOT for clinical use.
 #
-# Configure via env vars (all optional):
-#   SOURCES   (default "europepmc,pubmed")   corpus sources: europepmc,pubmed,urls,exa
-#   LIMIT     (default 400)                   max passages / training examples
-#   TEACHER   (default Qwen/Qwen2.5-72B-Instruct)
-#   URLS_FILE (optional)                      file of guideline URLs for SOURCES=...,urls
-#   RUN       (default synth-run)             adapter run name
+# Configure via env vars (all optional) — turn these UP to scale the model:
+#   SOURCES    (default "europepmc,pubmed")  corpus sources: europepmc,pubmed,urls,exa
+#   LIMIT      (default 400)                  max passages pulled
+#   PER_TOPIC  (default 8)                    articles fetched per topic (more = bigger corpus)
+#   VARIANTS   (default 1)                    cards generated PER passage (multiplies data)
+#   TEACHER    (default Qwen/Qwen2.5-72B-Instruct)
+#   EPOCHS     (default 2)   LORA_R (default 16)   LR (default 1e-4)   MAXSEQ (default 2048)
+#   URLS_FILE  (optional)                     file of guideline URLs for SOURCES=...,urls
+#   RUN        (default synth-run)            adapter run name
+#
+# Example "much bigger" run (≈ thousands of cards, higher-capacity adapter):
+#   LIMIT=2000 PER_TOPIC=40 VARIANTS=3 EPOCHS=3 LORA_R=32 bash scripts/plug_and_train.sh
 #
 # Usage:
 #   bash scripts/plug_and_train.sh                 # full pipeline
@@ -42,14 +48,22 @@ cd "$PROJECT"
 
 SOURCES="${SOURCES:-europepmc,pubmed}"
 LIMIT="${LIMIT:-400}"
+PER_TOPIC="${PER_TOPIC:-8}"
+VARIANTS="${VARIANTS:-1}"
 TEACHER="${TEACHER:-Qwen/Qwen2.5-72B-Instruct}"
+EPOCHS="${EPOCHS:-2}"
+LORA_R="${LORA_R:-16}"
+LR="${LR:-1e-4}"
+MAXSEQ="${MAXSEQ:-2048}"
 RUN="${RUN:-synth-run}"
 CORPUS="data/corpus/passages.jsonl"
 SYNTH="data/processed/task_sft.synth.jsonl"
 ADAPTER="models/kumru-neoperi-lora-${RUN}"
+TRAIN_ARGS=(--epochs "$EPOCHS" --lora-r "$LORA_R" --lr "$LR" --max-seq-len "$MAXSEQ")
 
 echo "============================================================"
-echo "plug_and_train  sources=$SOURCES limit=$LIMIT teacher=$TEACHER run=$RUN"
+echo "plug_and_train  sources=$SOURCES limit=$LIMIT per_topic=$PER_TOPIC variants=$VARIANTS"
+echo "  teacher=$TEACHER  epochs=$EPOCHS lora_r=$LORA_R lr=$LR maxseq=$MAXSEQ  run=$RUN"
 echo "  (plumbing=$PLUMBING)"
 echo "============================================================"
 
@@ -77,15 +91,15 @@ EXTRA_ARGS=()
 
 echo "==> [1/4] Building open-literature corpus -> $CORPUS"
 python scripts/build_corpus.py --out "$CORPUS" --sources "$SOURCES" \
-    --limit "$LIMIT" "${EXTRA_ARGS[@]}"
+    --limit "$LIMIT" --per-topic "$PER_TOPIC" "${EXTRA_ARGS[@]}"
 
 echo "==> [2/4] Distilling grounded TR cards with teacher -> $SYNTH"
 python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
-    --teacher "$TEACHER" --limit "$LIMIT"
+    --teacher "$TEACHER" --limit "$LIMIT" --variants "$VARIANTS"
 
 echo "==> [3/4] Smoke + full QLoRA fine-tune (SYNTHETIC mode) -> $ADAPTER"
-python scripts/train_lora.py "$SYNTH" "$RUN" --allow-synthetic --smoke-only
-python scripts/train_lora.py "$SYNTH" "$RUN" --allow-synthetic
+python scripts/train_lora.py "$SYNTH" "$RUN" --allow-synthetic --smoke-only "${TRAIN_ARGS[@]}"
+python scripts/train_lora.py "$SYNTH" "$RUN" --allow-synthetic "${TRAIN_ARGS[@]}"
 
 echo "==> [4/4] Research gate (eval + red-team) on $ADAPTER"
 set +e

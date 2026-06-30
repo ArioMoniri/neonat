@@ -148,6 +148,7 @@ def build_row(card, vignette, passage, src):
             "source": "auto", "teacher": src.get("teacher"),
             "passage_id": src.get("passage_id"), "passage_source": src.get("source"),
             "license": src.get("license"), "url": src.get("url"),
+            "variant": src.get("variant", 0),
         },
     }
 
@@ -194,6 +195,9 @@ def main():
     ap.add_argument("--out", default="data/processed/task_sft.synth.jsonl")
     ap.add_argument("--teacher", default="Qwen/Qwen2.5-72B-Instruct")
     ap.add_argument("--limit", type=int, default=400, help="max passages to process")
+    ap.add_argument("--variants", type=int, default=1,
+                    help="cards to generate PER passage (multiplies dataset size; "
+                         "temperature sampling makes them diverse). e.g. 3 -> ~3x data")
     ap.add_argument("--max-new-tokens", type=int, default=1024,
                     help="raise if cards get truncated (vignette+lists can be long)")
     ap.add_argument("--dry-run", action="store_true",
@@ -242,54 +246,62 @@ def main():
                 "  • Re-running is cheap: the corpus and teacher weights are already "
                 "cached; just re-run synthesize_cards.py on the existing passages file.")
 
+    variants = max(1, args.variants)
+    total = len(passages) * variants
+    print(f"==> {len(passages)} passage(s) x {variants} variant(s) = up to {total} cards")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     kept, dropped = 0, 0
-    drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "decision_like": 0}
+    drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "decision_like": 0, "dup": 0}
     with open(args.out, "w", encoding="utf-8") as out_fh:
         for i, p in enumerate(passages, 1):
             pid = p.get("passage_id", f"p{i}")
-            try:
-                raw = gen(p["passage"], pid)
-            except Exception as e:  # noqa: BLE001
-                drops["gen_error"] += 1
-                dropped += 1
-                # Show the REAL error (type + repr), and a full traceback for the
-                # first one — str(e) can be empty for some exception types.
-                print(f"    [{i}/{len(passages)}] {pid}: generation error: "
-                      f"{type(e).__name__}: {e!r}")
-                if drops["gen_error"] == 1:
-                    traceback.print_exc()
-                # Fail fast: don't waste the whole corpus on a systemic failure.
-                if drops["gen_error"] >= 5 and kept == 0:
-                    sys.exit(
-                        "ABORT: teacher generation failed on the first 5 passages "
-                        "(traceback above). This is a systemic issue, not bad data. "
-                        "Try a smaller teacher (TEACHER=Qwen/Qwen2.5-32B-Instruct) or "
-                        "--max-new-tokens 512. Corpus + weights are cached, so re-running "
-                        "is fast.")
-                continue
-            obj = extract_json(raw)
-            card = to_card(obj, pid) if obj else None
-            if card is None:
-                drops["no_json"] += 1
-                dropped += 1
-                continue
-            ok, reason = TL.validate_card(card)
-            if not ok:
-                drops["invalid_card"] += 1
-                dropped += 1
-                continue
-            # Reject decision-like leakage (dose/diagnosis) before it trains in.
-            blob = json.dumps(card, ensure_ascii=False)
-            if TL.looks_like_decision(blob):
-                drops["decision_like"] += 1
-                dropped += 1
-                continue
-            vignette = (obj.get("vignette") or "Sentetik hasta bağlamı")
-            row = build_row(card, vignette, p["passage"],
-                            {**p, "teacher": teacher_name})
-            out_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            kept += 1
+            seen_cards = set()                    # dedup identical variants per passage
+            for v in range(variants):
+                try:
+                    raw = gen(p["passage"], pid)
+                except Exception as e:  # noqa: BLE001
+                    drops["gen_error"] += 1
+                    dropped += 1
+                    # Real error (type + repr); full traceback on the first one —
+                    # str(e) can be empty for some exception types.
+                    print(f"    [{i}/{len(passages)} v{v}] {pid}: generation error: "
+                          f"{type(e).__name__}: {e!r}")
+                    if drops["gen_error"] == 1:
+                        traceback.print_exc()
+                    if drops["gen_error"] >= 5 and kept == 0:
+                        sys.exit(
+                            "ABORT: teacher generation failed on the first 5 attempts "
+                            "(traceback above). Systemic issue, not bad data. Try a "
+                            "smaller teacher (TEACHER=Qwen/Qwen2.5-32B-Instruct) or "
+                            "--max-new-tokens 512. Corpus + weights are cached.")
+                    continue
+                obj = extract_json(raw)
+                card = to_card(obj, pid) if obj else None
+                if card is None:
+                    drops["no_json"] += 1
+                    dropped += 1
+                    continue
+                ok, reason = TL.validate_card(card)
+                if not ok:
+                    drops["invalid_card"] += 1
+                    dropped += 1
+                    continue
+                blob = json.dumps(card, ensure_ascii=False)
+                # Reject decision-like leakage (dose/diagnosis) before it trains in.
+                if TL.looks_like_decision(blob):
+                    drops["decision_like"] += 1
+                    dropped += 1
+                    continue
+                if blob in seen_cards:            # identical variant — skip
+                    drops["dup"] += 1
+                    dropped += 1
+                    continue
+                seen_cards.add(blob)
+                vignette = (obj.get("vignette") or "Sentetik hasta bağlamı")
+                row = build_row(card, vignette, p["passage"],
+                                {**p, "teacher": teacher_name, "variant": v})
+                out_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                kept += 1
             if i % 25 == 0 or i == len(passages):
                 print(f"    [{i}/{len(passages)}] kept={kept} dropped={dropped} {drops}")
 

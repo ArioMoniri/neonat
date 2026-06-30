@@ -639,6 +639,14 @@ def main():
     ap.add_argument("--allow-synthetic", action="store_true",
                     help="also accept machine-generated rows (provenance.source=='auto'); "
                          "the run is labelled synthetic and cannot earn a clinical RELEASE_OK")
+    # --- Scale / capacity knobs (override the inline CONFIG) ---
+    ap.add_argument("--epochs", type=float, default=None, help="training epochs")
+    ap.add_argument("--lora-r", type=int, default=None, help="LoRA rank (capacity)")
+    ap.add_argument("--lora-alpha", type=int, default=None, help="LoRA alpha")
+    ap.add_argument("--lr", type=float, default=None, help="learning rate")
+    ap.add_argument("--max-seq-len", type=int, default=None, help="max sequence length")
+    ap.add_argument("--batch-size", type=int, default=None, help="per-device batch size")
+    ap.add_argument("--grad-accum", type=int, default=None, help="gradient accumulation steps")
     args = ap.parse_args()
 
     if args.install_deps:
@@ -649,6 +657,13 @@ def main():
         CONFIG["base_model"] = args.base_model
     if args.no_unsloth:
         CONFIG["use_unsloth"] = False
+    # Apply capacity/scale overrides.
+    for cli, key in (("epochs", "epochs"), ("lora_r", "lora_r"), ("lora_alpha", "lora_alpha"),
+                     ("lr", "learning_rate"), ("max_seq_len", "max_seq_len"),
+                     ("batch_size", "batch_size"), ("grad_accum", "grad_accum")):
+        val = getattr(args, cli)
+        if val is not None:
+            CONFIG[key] = val
     if args.output_dir:
         CONFIG["output_dir"] = args.output_dir
     elif args.run_name:
@@ -659,6 +674,9 @@ def main():
     print("=" * 78)
     print("Kumru-2B  TR neonatology/perinatology  QLoRA fine-tune")
     print(f"  base={CONFIG['base_model']}  out={CONFIG['output_dir']}  data={data_path}")
+    print(f"  epochs={CONFIG['epochs']}  lora_r={CONFIG['lora_r']}  "
+          f"lora_alpha={CONFIG['lora_alpha']}  lr={CONFIG['learning_rate']}  "
+          f"max_seq_len={CONFIG['max_seq_len']}  bs={CONFIG['batch_size']}x{CONFIG['grad_accum']}")
     print("=" * 78)
 
     check_gpu()
