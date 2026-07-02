@@ -216,6 +216,33 @@ STOP_TR = {"bebek", "hasta", "değerlendir", "öner", "için", "ve", "ile", "bir
            "mı", "mi", "ne", "olan", "olarak", "gebelik", "haftası", "durumu"}
 
 
+def score_mcq(model, tok, mcq_cases):
+    """Deterministic single-letter MCQ accuracy + format compliance."""
+    import re
+    correct, compliant, n = 0, 0, 0
+    for c in mcq_cases:
+        opts = c.get("secenekler", [])[:4]
+        letters = ["A", "B", "C", "D"][:len(opts)]
+        body = "\n".join(f"{L}) {o}" for L, o in zip(letters, opts))
+        prompt = (f"Soru: {c.get('soru','')}\nSeçenekler:\n{body}\n"
+                  "Yalnızca tek harf ile cevapla (A/B/C/D).")
+        try:
+            out = generate(model, tok, "Sen bir Türkçe tıp sınavı asistanısın.",
+                           prompt, max_new_tokens=8)
+        except Exception:  # noqa: BLE001
+            out = ""
+        out2, _ = strip_reasoning(out)
+        # A STANDALONE A-D letter (not the 'C' inside "Cevap:", etc.).
+        mobj = re.search(r"(?<![A-Za-z])([ABCDabcd])(?![A-Za-z])", out2)
+        n += 1
+        if mobj:
+            compliant += 1
+            if mobj.group(1).upper() == str(c.get("dogru", "")).upper()[:1]:
+                correct += 1
+    return {"mcq_accuracy": round(correct / n, 4) if n else None,
+            "mcq_format": round(compliant / n, 4) if n else None, "mcq_n": n}
+
+
 def aggregate(results):
     def mean(key):
         vals = [r[key] for r in results if r.get(key) is not None]
@@ -299,9 +326,15 @@ def main():
                     help="build base+ft specs from config/models.conf for run name")
     ap.add_argument("--extra-registry", default=None,
                     help="benchmark-only baselines file (name|id|gated), e.g. MedGemma")
+    ap.add_argument("--mcq", default=None, help="optional MCQ knowledge probe jsonl")
     ap.add_argument("--out", default="data/benchmark/leaderboard")
     ap.add_argument("--dry-run", action="store_true", help="stub scorer, no models")
     args = ap.parse_args()
+
+    mcq_cases = []
+    if args.mcq and os.path.exists(args.mcq):
+        mcq_cases = [json.loads(l) for l in open(args.mcq, encoding="utf-8") if l.strip()]
+        print(f"==> {len(mcq_cases)} MCQ knowledge-probe case(s)")
 
     if not os.path.exists(args.benchmark):
         sys.exit(f"ABORT: benchmark not found: {args.benchmark} (run build_benchmark.py)")
@@ -342,7 +375,10 @@ def main():
                     print(f"    gen error on {c.get('id')}: {type(e).__name__}: {e!r}")
                     out = ""
                 results.append(score_case(c, out))
-            board.append((label, aggregate(results)))
+            m = aggregate(results)
+            if mcq_cases:
+                m.update(score_mcq(model, tok, mcq_cases))
+            board.append((label, m))
             del model
             try:
                 import torch, gc
@@ -373,6 +409,16 @@ def main():
     for label, m in board:
         cells = [("" if m.get(c) is None else str(m.get(c))) for c in cols]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    if mcq_cases:
+        mboard = sorted(board, key=lambda x: (x[1].get("mcq_accuracy") or 0), reverse=True)
+        lines += ["", "## Synthetic knowledge probe (MCQ)",
+                  "Teacher-generated, auto-QC'd, **research only — not clinician-validated**. "
+                  "Reported SEPARATELY; never blended into the card composite.", "",
+                  "| model | mcq_accuracy | mcq_format | mcq_n |",
+                  "|---|---|---|---|"]
+        for label, m in mboard:
+            if m.get("mcq_accuracy") is not None:
+                lines.append(f"| {label} | {m['mcq_accuracy']} | {m['mcq_format']} | {m['mcq_n']} |")
     md = "\n".join(lines) + "\n"
     with open(args.out + ".md", "w", encoding="utf-8") as fh:
         fh.write(md)

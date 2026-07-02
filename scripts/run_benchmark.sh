@@ -21,5 +21,7 @@ if [ ! -f "$BENCH" ]; then
 fi
 echo "==> Scoring registry models + external baselines (run=$RUN)"
 EXTRA="config/benchmark_models.conf"
+MCQ="data/benchmark/mcq.jsonl"
 python scripts/benchmark.py --benchmark "$BENCH" --from-registry "$RUN" \
-    ${EXTRA:+--extra-registry "$EXTRA"}
+    ${EXTRA:+--extra-registry "$EXTRA"} \
+    $( [ -f "$MCQ" ] && echo "--mcq $MCQ" )

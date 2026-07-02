@@ -71,11 +71,14 @@ Three challenges to become a credible (not just working) benchmark:
    harness itself.
 2. **Calibrated, versioned thresholds + regression tracking** (freeze `benchmark_v1`,
    pin cutoffs, store metrics per model/date).
-3. **Contamination + robustness audit**: assert 3-way passage-id disjointness
-   (train / grounded-benchmark / MCQ) and score under 2-3 paraphrased guardrail
-   prompts to report variance. Plus a synthetic **MCQ knowledge probe**
-   (`build_mcq.py`, teacher-generated + auto-QC, clearly labeled) as MedGemma's fair
-   arena — reported separately, never blended into the card composite.
+3. **Contamination + robustness audit**: 3-way passage-id disjointness
+   (train / grounded-benchmark / MCQ) is now **asserted** in `build_benchmark.py`;
+   still todo: score under 2-3 paraphrased guardrail prompts to report variance.
+   The synthetic **MCQ knowledge probe** (`build_mcq.py`, teacher-generated +
+   auto-QC, clearly labeled) is **implemented** and reported as a separate table
+   (never blended into the card composite) — MedGemma's fair arena.
+   An **interactive preflight** (`neoperi_launch.sh`) pops up to check GPU/VRAM,
+   disk, HF token, and teacher-fit, prompting to downshift the teacher if needed.
 4. **Turkish-language corpus sources** would make `grounding` meaningful (today the
    English passages depress it uniformly).
 

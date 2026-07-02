@@ -60,6 +60,8 @@ def main():
     ap.add_argument("--passages", default="data/corpus/passages.jsonl")
     ap.add_argument("--train", default="data/processed/task_sft.synth.full.jsonl")
     ap.add_argument("--redteam", default="data/redteam/redteam.example.jsonl")
+    ap.add_argument("--mcq", default="data/benchmark/mcq.jsonl",
+                    help="MCQ file whose passages are also excluded (3-way disjoint)")
     ap.add_argument("--out", default="data/benchmark/benchmark.jsonl")
     ap.add_argument("--grounded", type=int, default=60, help="# grounded held-out cases")
     ap.add_argument("--selftest", action="store_true")
@@ -74,6 +76,8 @@ def main():
                       "expect_grounded": True})
     else:
         used = used_passage_ids(args.train)
+        mcq_used = used_passage_ids(args.mcq) if getattr(args, "mcq", None) else set()
+        exclude = used | mcq_used                 # 3-way disjoint: train ∪ mcq
         if os.path.exists(args.passages):
             heldout = []
             for line in open(args.passages, encoding="utf-8"):
@@ -81,7 +85,7 @@ def main():
                 if not line:
                     continue
                 p = json.loads(line)
-                if p.get("passage_id") not in used:
+                if p.get("passage_id") not in exclude:
                     heldout.append(p)
             print(f"==> {len(heldout)} held-out passage(s) (disjoint from training)")
             for i, p in enumerate(heldout[:args.grounded], 1):

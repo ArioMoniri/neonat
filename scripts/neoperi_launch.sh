@@ -135,14 +135,69 @@ run_train() {
   RUN="$RUN" EPOCHS="${EPOCHS:-2}" LORA_R="${LORA_R:-16}" MODELS="${MODELS:-}" \
     bash scripts/train_multi.sh "$SYNTH"
 }
-run_bench() { echo "### [bench] leaderboard"; RUN="$RUN" SYNTH="$SYNTH" bash scripts/run_benchmark.sh; }
+run_mcq() {
+  echo "### [mcq] synthetic knowledge probe (teacher-generated)"
+  mig_teacher_guard
+  [ -f "$CORPUS" ] || run_corpus
+  python scripts/build_mcq.py --passages "$CORPUS" --train "$SYNTH" \
+    --grounded data/benchmark/benchmark.jsonl \
+    --teacher "${TEACHER:-Qwen/Qwen2.5-72B-Instruct}" --n "${MCQ_N:-100}" \
+    --out data/benchmark/mcq.jsonl || echo "==> MCQ build skipped/failed (non-fatal)."
+}
+run_bench() {
+  echo "### [bench] leaderboard (+ MCQ probe if present)"
+  RUN="$RUN" SYNTH="$SYNTH" bash scripts/run_benchmark.sh
+}
+
+# -------- Interactive PREFLIGHT: pop up and ask for anything missing ----------
+planned_students() {
+  local only="${MODELS:-}"
+  while IFS='|' read -r name _hf gated _f; do
+    name="$(echo "$name" | xargs)"; [ -z "$name" ] && continue
+    case "$name" in \#*) continue ;; esac
+    if [ -n "$only" ] && ! echo ",$only," | grep -q ",$name,"; then continue; fi
+    echo -n "$name "
+  done < "$PROJECT/config/models.conf"
+}
+preflight() {
+  echo "======================= PREFLIGHT ======================="
+  local gpu memmb disk
+  gpu="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+  memmb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
+  disk="$(df -Pk "$PROJECT" | awk 'NR==2{printf "%.0f", $4/1024/1024}')"
+  echo "  GPU: ${gpu:-none}  (${memmb:-?} MiB)     free disk: ${disk:-?} GiB"
+  echo "  Teacher: ${TEACHER:-Qwen/Qwen2.5-72B-Instruct}"
+  echo "  Students: $(planned_students)"
+  echo "  HF token: $([ -n "${HF_TOKEN:-}" ] && echo present || echo 'absent (gated models will be skipped)')"
+  # Teacher fit check — offer to downshift if it won't fit.
+  local t="${TEACHER:-Qwen/Qwen2.5-72B-Instruct}"
+  if [ -n "$memmb" ]; then
+    if echo "$t" | grep -qiE '235b' && [ "$memmb" -lt 130000 ]; then
+      echo "  ! $t needs ~130GB; this GPU has ${memmb}MiB."
+    elif echo "$t" | grep -qiE '72b' && [ "$memmb" -lt 45000 ]; then
+      echo "  ! 72B teacher may not fit ${memmb}MiB."
+    fi
+    if [ "$memmb" -lt 45000 ] && [ -t 0 ] && [ -z "${TEACHER:-}" ]; then
+      printf "  Switch teacher to Qwen/Qwen3-32B (fits smaller VRAM)? [Y/n] "
+      read -r a; case "$a" in n|N) ;; *) export TEACHER="Qwen/Qwen3-32B"; echo "  -> TEACHER=Qwen3-32B" ;; esac
+    fi
+  fi
+  if [ -n "${disk:-}" ] && [ "${disk%.*}" -lt 60 ]; then
+    echo "  ! Low disk (${disk} GiB). Models can need 40-120GB; free space or 'rm -rf .hf_cache'."
+  fi
+  if [ -t 0 ]; then
+    printf "Proceed? [Y/n] "; read -r go; case "$go" in n|N) echo "Aborted."; exit 0 ;; esac
+  fi
+  echo "========================================================="
+}
 
 case "$STAGE" in
   corpus)  run_corpus ;;
-  distill) run_distill ;;
-  train)   run_train ;;
+  distill) preflight; run_distill ;;
+  train)   preflight; run_train ;;
+  mcq)     preflight; run_mcq ;;
   bench)   run_bench ;;
-  all)     run_train; run_bench ;;   # train() chains corpus+distill if missing
-  *) echo "unknown stage: $STAGE (use corpus|distill|train|bench|all)" >&2; exit 2 ;;
+  all)     preflight; run_train; run_mcq; run_bench ;;   # train() chains corpus+distill if missing
+  *) echo "unknown stage: $STAGE (use corpus|distill|train|mcq|bench|all)" >&2; exit 2 ;;
 esac
 echo "==> neoperi_launch stage '$STAGE' complete."
