@@ -185,7 +185,7 @@ def teacher_generate(model, tok, passage, passage_id, max_new_tokens=512):
                              temperature=0.7, top_p=0.9,
                              pad_token_id=(tok.pad_token_id or tok.eos_token_id),
                              eos_token_id=tok.eos_token_id)
-    return tok.decode(out[0][n_in:], skip_special_tokens=True)
+    return tok.decode(out[0][n_in:], skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
 
 # ----------------------------------------------------------------------------

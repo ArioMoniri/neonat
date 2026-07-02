@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-ct_tensor+selfheal"
+NEOPERI_VERSION = "2026-07-03-decodepolish"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -675,7 +675,8 @@ def _generate(model, tokenizer, user_text):
         out = model.generate(input_ids, max_new_tokens=256, do_sample=False,
                              eos_token_id=response_terminator_id(tokenizer),
                              pad_token_id=tokenizer.pad_token_id, **kw)
-    return tokenizer.decode(out[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
+    return tokenizer.decode(out[0][input_ids.shape[1]:], skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False).strip()
 
 
 def _flag_ungrounded(tuned_text):
@@ -694,11 +695,14 @@ def _flag_ungrounded(tuned_text):
 
 def sanity_check(model, tokenizer, backend):
     print("\n==> SANITY CHECK (synthetic placeholder vignettes) ...")
-    try:
-        from unsloth import FastLanguageModel
-        FastLanguageModel.for_inference(model)
-    except Exception:  # noqa: BLE001
-        model.eval()
+    if backend == "unsloth":
+        try:
+            from unsloth import FastLanguageModel
+            FastLanguageModel.for_inference(model)
+        except Exception:  # noqa: BLE001
+            model.eval()
+    else:
+        model.eval()   # HF path: don't import Unsloth (avoids late-patch warnings)
 
     for i, v in enumerate(SANITY_VIGNETTES, 1):
         print(f"\n----- vignette {i} -----")
