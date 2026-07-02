@@ -424,6 +424,19 @@ def apply_ct(tokenizer, messages, **kwargs):
         return tokenizer.apply_chat_template(messages, **kwargs)
 
 
+def ct_ids(tokenizer, messages, **kwargs):
+    """Return a flat list[int] of token ids from apply_chat_template, robust to
+    transformers versions that return a BatchEncoding/dict or a batched list."""
+    out = apply_ct(tokenizer, messages, tokenize=True, **kwargs)
+    if hasattr(out, "input_ids"):
+        out = out.input_ids
+    elif isinstance(out, dict):
+        out = out["input_ids"]
+    if len(out) > 0 and isinstance(out[0], (list, tuple)):   # unwrap batch dim
+        out = out[0]
+    return list(out)
+
+
 def ensure_chat_and_pad(tokenizer):
     if tokenizer.chat_template is None:
         print("==> Tokenizer has no chat_template; applying a ChatML fallback.")
@@ -463,10 +476,9 @@ def make_encoder(tokenizer, max_len):
 
     def encode(example):
         msgs = example["messages"]
-        prompt_ids = apply_ct(
-            tokenizer, msgs[:-1], add_generation_prompt=True, tokenize=True)
-        response_ids = tokenizer(
-            msgs[-1]["content"], add_special_tokens=False)["input_ids"] + [eot_id]
+        prompt_ids = ct_ids(tokenizer, msgs[:-1], add_generation_prompt=True)
+        response_ids = list(tokenizer(
+            msgs[-1]["content"], add_special_tokens=False)["input_ids"]) + [eot_id]
 
         input_ids = prompt_ids + response_ids
         labels = [-100] * len(prompt_ids) + response_ids
