@@ -10,14 +10,16 @@
 ## Model choices (and the naming reality)
 | Role | Default | Notes |
 |---|---|---|
-| Students (fine-tuned) | `vngrs-ai/Kumru-2B`, `google/gemma-3-4b-it`, `Qwen/Qwen2.5-3B-Instruct` | all swappable in `config/models.conf` |
+| Students (fine-tuned) | `vngrs-ai/Kumru-2B`, `google/gemma-4-E4B-it`, `Qwen/Qwen2.5-3B-Instruct` | all swappable in `config/models.conf` |
 | Teacher | `Qwen/Qwen2.5-72B-Instruct` | swappable via `TEACHER=` |
 
-- **There is no "Gemma 4"** (newest is Gemma 3). When Google ships one, change the
-  id in `config/models.conf` — nothing else.
+- **Gemma 4 is out** (`google/gemma-4-E4B-it`, ~4.5B effective, **multimodal**
+  text/image/audio). We fine-tune its language part for this text card task. It
+  needs the **latest transformers** (the launcher upgrades it when planned) and
+  eager attention (`--attn-impl eager`, set in the registry). The loader falls
+  back to the multimodal model class automatically.
 - **Gemma is gated**: needs an HF token + license acceptance; the launcher prompts
-  for it and skips Gemma if absent. It also needs `transformers ≥ 4.50` and eager
-  attention (`--attn-impl eager`, already set for Gemma rows).
+  for it and skips Gemma if absent.
 - **Qwen3** exists but its only >32B option is a 235B MoE (won't fit the slice);
   Qwen2.5-72B is the practical best teacher here.
 - Family-aware trainer: correct **turn-terminator per family** (Gemma

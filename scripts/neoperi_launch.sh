@@ -105,6 +105,12 @@ run_distill() {
 }
 run_train() {
   echo "### [train] fine-tune all registry students"
+  # Gemma 4 (multimodal) needs the latest transformers; upgrade if it's planned.
+  if grep -qiE '^\s*[^#].*gemma-4' "$PROJECT/config/models.conf"; then
+    echo "==> Gemma 4 in plan -> upgrading transformers (needs latest)."
+    python -m pip install -U "transformers>=4.56" || \
+      echo "    (upgrade failed; if Gemma 4 load errors, run: pip install -U transformers)"
+  fi
   [ -f "$SYNTH" ] || run_distill
   RUN="$RUN" EPOCHS="${EPOCHS:-2}" LORA_R="${LORA_R:-16}" MODELS="${MODELS:-}" \
     bash scripts/train_multi.sh "$SYNTH"

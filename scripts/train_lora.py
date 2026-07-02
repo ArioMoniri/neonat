@@ -346,18 +346,29 @@ def load_model_and_tokenizer():
         bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
-    tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], use_fast=True)
+    # Tokenizer: AutoTokenizer works for text; multimodal repos (Gemma 4) may need
+    # the processor's tokenizer. Fall back gracefully.
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], use_fast=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"==> AutoTokenizer failed ({e}); trying AutoProcessor.tokenizer.")
+        from transformers import AutoProcessor
+        tokenizer = AutoProcessor.from_pretrained(cfg["base_model"]).tokenizer
     extra = {}
     if cfg.get("attn_impl"):
-        # Gemma-2/3 train more stably with eager attention (logit soft-capping).
+        # Gemma trains more stably with eager attention (logit soft-capping).
         extra["attn_implementation"] = cfg["attn_impl"]
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["base_model"],
-        quantization_config=bnb,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        **extra,
-    )
+    load_kw = dict(quantization_config=bnb, torch_dtype=torch.bfloat16,
+                   device_map="auto", **extra)
+    # Text CausalLM first; multimodal (Gemma 4 = image/text/audio) needs the
+    # image-text-to-text class, whose LM submodule we then LoRA-tune for text.
+    try:
+        model = AutoModelForCausalLM.from_pretrained(cfg["base_model"], **load_kw)
+    except Exception as e:  # noqa: BLE001
+        print(f"==> AutoModelForCausalLM failed ({type(e).__name__}); trying "
+              "AutoModelForImageTextToText (multimodal, e.g. Gemma 4).")
+        from transformers import AutoModelForImageTextToText
+        model = AutoModelForImageTextToText.from_pretrained(cfg["base_model"], **load_kw)
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     lora = LoraConfig(
         r=cfg["lora_r"], lora_alpha=cfg["lora_alpha"], lora_dropout=cfg["lora_dropout"],
