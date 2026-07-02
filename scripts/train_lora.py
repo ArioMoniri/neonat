@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-decodepolish"
+NEOPERI_VERSION = "2026-07-03-gemma-lora-discover"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -375,14 +375,11 @@ def load_model_and_tokenizer():
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(cfg["base_model"], **load_kw)
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-    # On a MULTIMODAL base (Gemma-4 = text/image/audio), the vision (SigLIP) and
-    # audio encoders ALSO contain q/k/v/o/gate/up/down proj — bare suffix targets
-    # would waste LoRA rank on them. Scope to the language model submodule.
-    if hasattr(model, "language_model") or hasattr(getattr(model, "model", None), "language_model"):
-        tmods = r"language_model\..*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
-        print("==> Multimodal base detected — scoping LoRA to language_model.* only.")
-    else:
-        tmods = cfg["target_modules"]
+    # DISCOVER the actual LoRA targets from the loaded model (robust across
+    # architectures + wrappers). On a MULTIMODAL base (Gemma-4 text/image/audio)
+    # the vision/audio towers ALSO have q/k/v/... proj, so exclude them by path.
+    tmods = discover_lora_targets(model, cfg["target_modules"])
+    print(f"==> LoRA targets: {len(tmods)} module(s) matched (LM only).")
     lora = LoraConfig(
         r=cfg["lora_r"], lora_alpha=cfg["lora_alpha"], lora_dropout=cfg["lora_dropout"],
         target_modules=tmods, bias="none", task_type="CAUSAL_LM",
@@ -390,6 +387,25 @@ def load_model_and_tokenizer():
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
     return model, tokenizer, "hf"
+
+
+# Vision/audio tower path fragments to EXCLUDE from LoRA on multimodal models.
+_NON_LM = ("vision", "visual", "audio", "image", "multi_modal", "multimodal",
+           "mm_projector", "vision_tower", "audio_tower", "vision_model", "audio_model")
+
+
+def discover_lora_targets(model, proj_names):
+    """Return the list of FULL module names to LoRA-tune: every Linear whose leaf
+    name is a projection (q/k/v/o/gate/up/down) and is NOT in a vision/audio tower.
+    Robust to wrappers/prefixes (e.g. Gemma-4 model.language_model.layers.N...)."""
+    proj = set(proj_names)
+    names = []
+    for name, _mod in model.named_modules():
+        leaf = name.split(".")[-1]
+        if leaf in proj and not any(b in name.lower() for b in _NON_LM):
+            names.append(name)
+    # Fallback to bare suffixes if discovery somehow found nothing.
+    return names or list(proj)
 
 
 # A clean ChatML fallback template, only used if Kumru ships without a chat_template.
