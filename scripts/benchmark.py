@@ -147,20 +147,21 @@ def load_model(base_id, adapter_dir):
 
 def generate(model, tok, system, user, max_new_tokens=384):
     import torch
-    msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     dev = model.get_input_embeddings().weight.device
     try:
-        ids = TL.apply_ct(tok, msgs, add_generation_prompt=True,
-                          return_tensors="pt").to(dev)
+        input_ids, attn = TL.ct_tensor(
+            tok, [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            device=dev, add_generation_prompt=True)
     except Exception:  # some bases reject a system role — fold it into user
-        msgs = [{"role": "user", "content": system + "\n\n" + user}]
-        ids = TL.apply_ct(tok, msgs, add_generation_prompt=True,
-                          return_tensors="pt").to(dev)
+        input_ids, attn = TL.ct_tensor(
+            tok, [{"role": "user", "content": system + "\n\n" + user}],
+            device=dev, add_generation_prompt=True)
+    kw = {} if attn is None else {"attention_mask": attn}
     with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=max_new_tokens, do_sample=False,
+        out = model.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False,
                              eos_token_id=TL.response_terminator_id(tok),
-                             pad_token_id=tok.pad_token_id)
-    return tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+                             pad_token_id=tok.pad_token_id, **kw)
+    return tok.decode(out[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 
 # ----------------------------------------------------------------------------

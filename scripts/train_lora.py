@@ -442,6 +442,24 @@ def ct_ids(tokenizer, messages, **kwargs):
     return list(out)
 
 
+def ct_tensor(tokenizer, messages, device=None, **kwargs):
+    """Return (input_ids_tensor, attention_mask_or_None) for generation, robust to
+    apply_chat_template returning a BatchEncoding/dict OR a bare tensor. Treating a
+    BatchEncoding as a tensor (e.g. `.shape[1]`) raises a bare AttributeError."""
+    enc = apply_ct(tokenizer, messages, return_tensors="pt", **kwargs)
+    if hasattr(enc, "input_ids"):          # BatchEncoding
+        input_ids, attn = enc.input_ids, getattr(enc, "attention_mask", None)
+    elif isinstance(enc, dict):
+        input_ids, attn = enc["input_ids"], enc.get("attention_mask")
+    else:                                  # already a tensor
+        input_ids, attn = enc, None
+    if device is not None:
+        input_ids = input_ids.to(device)
+        if attn is not None:
+            attn = attn.to(device)
+    return input_ids, attn
+
+
 def ensure_chat_and_pad(tokenizer):
     if tokenizer.chat_template is None:
         print("==> Tokenizer has no chat_template; applying a ChatML fallback.")
@@ -647,13 +665,14 @@ def _generate(model, tokenizer, user_text):
     import torch
     msgs = [{"role": "system", "content": SANITY_SYSTEM},
             {"role": "user", "content": user_text}]
-    ids = apply_ct(tokenizer, msgs,
-                   add_generation_prompt=True, return_tensors="pt").to(model.device)
+    dev = model.get_input_embeddings().weight.device
+    input_ids, attn = ct_tensor(tokenizer, msgs, device=dev, add_generation_prompt=True)
+    kw = {} if attn is None else {"attention_mask": attn}
     with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=256, do_sample=False,
+        out = model.generate(input_ids, max_new_tokens=256, do_sample=False,
                              eos_token_id=response_terminator_id(tokenizer),
-                             pad_token_id=tokenizer.pad_token_id)
-    return tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+                             pad_token_id=tokenizer.pad_token_id, **kw)
+    return tokenizer.decode(out[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 
 def _flag_ungrounded(tuned_text):
