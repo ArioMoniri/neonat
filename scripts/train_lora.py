@@ -51,6 +51,9 @@ import re
 import subprocess
 import sys
 
+# Bump when shipping a fix; printed at startup so you can SEE which code is live.
+NEOPERI_VERSION = "2026-07-03-ct_tensor+selfheal"
+
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
 # ----------------------------------------------------------------------------
@@ -778,6 +781,7 @@ def main():
     data_path = args.data or CONFIG["default_data"]
 
     print("=" * 78)
+    print(f">>> neoperi code version: {NEOPERI_VERSION} <<<")
     print("Kumru-2B  TR neonatology/perinatology  QLoRA fine-tune")
     print(f"  base={CONFIG['base_model']}  out={CONFIG['output_dir']}  data={data_path}")
     print(f"  epochs={CONFIG['epochs']}  lora_r={CONFIG['lora_r']}  "

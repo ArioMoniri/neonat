@@ -337,6 +337,7 @@ def main():
         mcq_cases = [json.loads(l) for l in open(args.mcq, encoding="utf-8") if l.strip()]
         print(f"==> {len(mcq_cases)} MCQ knowledge-probe case(s)")
 
+    print(f">>> neoperi code version: {TL.NEOPERI_VERSION} <<<")
     if not os.path.exists(args.benchmark):
         sys.exit(f"ABORT: benchmark not found: {args.benchmark} (run build_benchmark.py)")
     cases = [json.loads(l) for l in open(args.benchmark, encoding="utf-8") if l.strip()]
