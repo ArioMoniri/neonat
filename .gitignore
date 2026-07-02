@@ -3,9 +3,13 @@
 dist/
 .venv/
 .hf_cache/
+.pip_cache/
 state/
 env.sh
+.hf_token
 models/
+data/corpus/
+data/benchmark/
 **/__pycache__/
 *.pyc
 *.log

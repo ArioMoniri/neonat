@@ -347,11 +347,16 @@ def load_model_and_tokenizer():
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg["base_model"], use_fast=True)
+    extra = {}
+    if cfg.get("attn_impl"):
+        # Gemma-2/3 train more stably with eager attention (logit soft-capping).
+        extra["attn_implementation"] = cfg["attn_impl"]
     model = AutoModelForCausalLM.from_pretrained(
         cfg["base_model"],
         quantization_config=bnb,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        **extra,
     )
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     lora = LoraConfig(
@@ -370,6 +375,17 @@ _CHATML = (
     "{% endfor %}"
     "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 )
+
+
+def response_terminator_id(tokenizer):
+    """The token that ends an assistant turn for THIS model family. Gemma ends
+    turns with <end_of_turn> (not </s>); ChatML models with <|im_end|>; most
+    others with eos. Using the right one teaches the model to actually stop."""
+    for tok in ("<end_of_turn>", "<|im_end|>", "<|eot_id|>"):
+        tid = tokenizer.convert_tokens_to_ids(tok)
+        if tid is not None and tid != tokenizer.unk_token_id and tid >= 0:
+            return tid
+    return tokenizer.eos_token_id
 
 
 def ensure_chat_and_pad(tokenizer):
@@ -407,14 +423,14 @@ def ensure_chat_and_pad(tokenizer):
 #   * a real stop token in every supervised target (model learns to stop).
 # ----------------------------------------------------------------------------
 def make_encoder(tokenizer, max_len):
-    eos_id = tokenizer.eos_token_id
+    eot_id = response_terminator_id(tokenizer)   # family-aware turn terminator
 
     def encode(example):
         msgs = example["messages"]
         prompt_ids = tokenizer.apply_chat_template(
             msgs[:-1], add_generation_prompt=True, tokenize=True)
         response_ids = tokenizer(
-            msgs[-1]["content"], add_special_tokens=False)["input_ids"] + [eos_id]
+            msgs[-1]["content"], add_special_tokens=False)["input_ids"] + [eot_id]
 
         input_ids = prompt_ids + response_ids
         labels = [-100] * len(prompt_ids) + response_ids
@@ -574,7 +590,7 @@ def _generate(model, tokenizer, user_text):
         msgs, add_generation_prompt=True, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model.generate(ids, max_new_tokens=256, do_sample=False,
-                             eos_token_id=tokenizer.eos_token_id,
+                             eos_token_id=response_terminator_id(tokenizer),
                              pad_token_id=tokenizer.pad_token_id)
     return tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
 
@@ -647,6 +663,8 @@ def main():
     ap.add_argument("--max-seq-len", type=int, default=None, help="max sequence length")
     ap.add_argument("--batch-size", type=int, default=None, help="per-device batch size")
     ap.add_argument("--grad-accum", type=int, default=None, help="gradient accumulation steps")
+    ap.add_argument("--attn-impl", default=None,
+                    help="attention impl for the HF path, e.g. 'eager' (recommended for Gemma)")
     args = ap.parse_args()
 
     if args.install_deps:
@@ -660,10 +678,14 @@ def main():
     # Apply capacity/scale overrides.
     for cli, key in (("epochs", "epochs"), ("lora_r", "lora_r"), ("lora_alpha", "lora_alpha"),
                      ("lr", "learning_rate"), ("max_seq_len", "max_seq_len"),
-                     ("batch_size", "batch_size"), ("grad_accum", "grad_accum")):
+                     ("batch_size", "batch_size"), ("grad_accum", "grad_accum"),
+                     ("attn_impl", "attn_impl")):
         val = getattr(args, cli)
         if val is not None:
             CONFIG[key] = val
+    # Non-Kumru families are safest on the HF path (Unsloth lags new archs).
+    if "kumru" not in CONFIG["base_model"].lower():
+        CONFIG["use_unsloth"] = False
     if args.output_dir:
         CONFIG["output_dir"] = args.output_dir
     elif args.run_name:

@@ -23,6 +23,7 @@ mkdir -p "$STAGE/scripts" "$STAGE/config" "$STAGE/docs" \
 cp "$REPO/scripts/"*.py "$STAGE/scripts/"
 cp "$REPO/scripts/"*.sh "$STAGE/scripts/"
 cp "$REPO/config/requirements-train.txt" "$STAGE/config/"
+cp "$REPO/config/models.conf" "$STAGE/config/"
 cp -R "$REPO/docs/neoperi-cdss" "$STAGE/docs/"
 cp -R "$REPO/.claude/agents/." "$STAGE/.claude/agents/"
 
