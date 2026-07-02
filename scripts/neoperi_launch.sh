@@ -100,19 +100,37 @@ run_corpus() {
 }
 run_distill() {
   echo "### [distill] teacher -> grounded TR cards"
+  mig_teacher_guard
   [ -f "$CORPUS" ] || run_corpus
   python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
     --teacher "${TEACHER:-Qwen/Qwen2.5-72B-Instruct}" --limit "${LIMIT:-400}" \
     --variants "${VARIANTS:-1}"
 }
+# Gemma-4/MedGemma are multimodal: their processor imports timm (vision) and
+# librosa/soundfile (audio) even for text-only use, and Gemma-4 needs a very recent
+# transformers. Install these only when such a model is actually planned.
+ensure_gemma_deps() {
+  if grep -qiE '^[[:space:]]*[^#].*gemma' "$PROJECT/config/models.conf" \
+     "$PROJECT/config/benchmark_models.conf" 2>/dev/null; then
+    echo "==> Gemma/MedGemma planned -> ensuring recent transformers + timm/librosa/soundfile."
+    python -m pip install -U "transformers>=4.60" timm librosa soundfile || \
+      echo "    (install failed; if a Gemma load errors: pip install -U transformers timm librosa soundfile)"
+  fi
+}
+# Abort early if a 235B teacher is asked for on a too-small (MIG) GPU.
+mig_teacher_guard() {
+  case "${TEACHER:-}" in *235B*|*235b*) ;; *) return 0 ;; esac
+  local freemb
+  freemb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
+  if [ -n "$freemb" ] && [ "$freemb" -lt 130000 ]; then
+    echo "ERROR: TEACHER=$TEACHER needs ~130GB (MIG OFF / full H200); this GPU reports ${freemb}MiB." >&2
+    echo "       Use TEACHER=Qwen/Qwen2.5-72B-Instruct or Qwen/Qwen3-32B, or disable MIG." >&2
+    exit 1
+  fi
+}
 run_train() {
   echo "### [train] fine-tune all registry students"
-  # Gemma 4 (multimodal) needs the latest transformers; upgrade if it's planned.
-  if grep -qiE '^\s*[^#].*gemma-4' "$PROJECT/config/models.conf"; then
-    echo "==> Gemma 4 in plan -> upgrading transformers (needs latest)."
-    python -m pip install -U "transformers>=4.56" || \
-      echo "    (upgrade failed; if Gemma 4 load errors, run: pip install -U transformers)"
-  fi
+  ensure_gemma_deps
   [ -f "$SYNTH" ] || run_distill
   RUN="$RUN" EPOCHS="${EPOCHS:-2}" LORA_R="${LORA_R:-16}" MODELS="${MODELS:-}" \
     bash scripts/train_multi.sh "$SYNTH"

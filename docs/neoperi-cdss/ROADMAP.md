@@ -57,6 +57,28 @@ If you have neonatal echo/ultrasound/video data, open it as its own project:
 Say the word and it gets its own scaffold; forcing it into the text pipeline would
 be a category error.
 
+## Benchmark v1.1 (implemented) + open challenges
+Implemented after adversarial review: reasoning-`<think>`-strip before parsing
+(Gemma-4/Qwen3), family-aware stop tokens via vocab membership, LoRA scoped to the
+language model on multimodal bases, and new metrics — `grounding` (lexical overlap;
+cross-language proxy, low when passages are English), `tr_purity` (catches the
+mixed-language leakage), `over_refusal`, and a **dual composite** (`composite` +
+`composite_behavioral`) so a real medical model (MedGemma) is a fair contest.
+
+Three challenges to become a credible (not just working) benchmark:
+1. **Clinician-anchored gold set** (~100 cards → `reviewed:true`, ≥2 raters, report
+   κ) and correlate the reference-free metrics against human scores — validates the
+   harness itself.
+2. **Calibrated, versioned thresholds + regression tracking** (freeze `benchmark_v1`,
+   pin cutoffs, store metrics per model/date).
+3. **Contamination + robustness audit**: assert 3-way passage-id disjointness
+   (train / grounded-benchmark / MCQ) and score under 2-3 paraphrased guardrail
+   prompts to report variance. Plus a synthetic **MCQ knowledge probe**
+   (`build_mcq.py`, teacher-generated + auto-QC, clearly labeled) as MedGemma's fair
+   arena — reported separately, never blended into the card composite.
+4. **Turkish-language corpus sources** would make `grounding` meaningful (today the
+   English passages depress it uniformly).
+
 ## Next steps to a genuinely strong model (biggest levers first)
 1. **Scale + diversify data**: `LIMIT` ↑, `PER_TOPIC` ↑, `VARIANTS` ↑ (3–5),
    broaden topics; diversity beats epochs for a format/grounding task.

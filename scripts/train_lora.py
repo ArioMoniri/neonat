@@ -370,9 +370,17 @@ def load_model_and_tokenizer():
         from transformers import AutoModelForImageTextToText
         model = AutoModelForImageTextToText.from_pretrained(cfg["base_model"], **load_kw)
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    # On a MULTIMODAL base (Gemma-4 = text/image/audio), the vision (SigLIP) and
+    # audio encoders ALSO contain q/k/v/o/gate/up/down proj — bare suffix targets
+    # would waste LoRA rank on them. Scope to the language model submodule.
+    if hasattr(model, "language_model") or hasattr(getattr(model, "model", None), "language_model"):
+        tmods = r"language_model\..*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+        print("==> Multimodal base detected — scoping LoRA to language_model.* only.")
+    else:
+        tmods = cfg["target_modules"]
     lora = LoraConfig(
         r=cfg["lora_r"], lora_alpha=cfg["lora_alpha"], lora_dropout=cfg["lora_dropout"],
-        target_modules=cfg["target_modules"], bias="none", task_type="CAUSAL_LM",
+        target_modules=tmods, bias="none", task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
@@ -391,12 +399,27 @@ _CHATML = (
 def response_terminator_id(tokenizer):
     """The token that ends an assistant turn for THIS model family. Gemma ends
     turns with <end_of_turn> (not </s>); ChatML models with <|im_end|>; most
-    others with eos. Using the right one teaches the model to actually stop."""
+    others with eos. Test real VOCAB membership — convert_tokens_to_ids never
+    returns None (it returns unk), and unk_token_id is None on Qwen, so the old
+    guard was unreliable."""
+    try:
+        vocab = tokenizer.get_vocab()
+    except Exception:  # noqa: BLE001
+        vocab = {}
     for tok in ("<end_of_turn>", "<|im_end|>", "<|eot_id|>"):
-        tid = tokenizer.convert_tokens_to_ids(tok)
-        if tid is not None and tid != tokenizer.unk_token_id and tid >= 0:
-            return tid
+        if tok in vocab:
+            return vocab[tok]
     return tokenizer.eos_token_id
+
+
+def apply_ct(tokenizer, messages, **kwargs):
+    """apply_chat_template that disables any forced <think> block (Gemma-4/Qwen3)
+    and degrades gracefully if the template doesn't accept the kwarg."""
+    try:
+        return tokenizer.apply_chat_template(
+            messages, enable_thinking=False, **kwargs)
+    except TypeError:
+        return tokenizer.apply_chat_template(messages, **kwargs)
 
 
 def ensure_chat_and_pad(tokenizer):
@@ -438,8 +461,8 @@ def make_encoder(tokenizer, max_len):
 
     def encode(example):
         msgs = example["messages"]
-        prompt_ids = tokenizer.apply_chat_template(
-            msgs[:-1], add_generation_prompt=True, tokenize=True)
+        prompt_ids = apply_ct(
+            tokenizer, msgs[:-1], add_generation_prompt=True, tokenize=True)
         response_ids = tokenizer(
             msgs[-1]["content"], add_special_tokens=False)["input_ids"] + [eot_id]
 
@@ -597,8 +620,8 @@ def _generate(model, tokenizer, user_text):
     import torch
     msgs = [{"role": "system", "content": SANITY_SYSTEM},
             {"role": "user", "content": user_text}]
-    ids = tokenizer.apply_chat_template(
-        msgs, add_generation_prompt=True, return_tensors="pt").to(model.device)
+    ids = apply_ct(tokenizer, msgs,
+                   add_generation_prompt=True, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model.generate(ids, max_new_tokens=256, do_sample=False,
                              eos_token_id=response_terminator_id(tokenizer),
