@@ -19,5 +19,7 @@ if [ ! -f "$BENCH" ]; then
   python scripts/build_benchmark.py --passages data/corpus/passages.jsonl \
       --train "$SYNTH" --redteam data/redteam/redteam.example.jsonl --out "$BENCH"
 fi
-echo "==> Scoring registry models (run=$RUN)"
-python scripts/benchmark.py --benchmark "$BENCH" --from-registry "$RUN"
+echo "==> Scoring registry models + external baselines (run=$RUN)"
+EXTRA="config/benchmark_models.conf"
+python scripts/benchmark.py --benchmark "$BENCH" --from-registry "$RUN" \
+    ${EXTRA:+--extra-registry "$EXTRA"}

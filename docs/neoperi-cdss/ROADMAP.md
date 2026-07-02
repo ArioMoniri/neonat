@@ -7,11 +7,19 @@
   `train_multi.sh` + `benchmark.py` produce a leaderboard.
 - Still a **research prototype** — synthetic data, no clinician review.
 
-## Model choices (and the naming reality)
+## Model choices — July 2026 landscape
 | Role | Default | Notes |
 |---|---|---|
-| Students (fine-tuned) | `vngrs-ai/Kumru-2B`, `google/gemma-4-E4B-it`, `Qwen/Qwen2.5-3B-Instruct` | all swappable in `config/models.conf` |
-| Teacher | `Qwen/Qwen2.5-72B-Instruct` | swappable via `TEACHER=` |
+| Students (fine-tuned) | `vngrs-ai/Kumru-2B`, `google/gemma-4-E4B-it`, `Qwen/Qwen3-4B-Instruct-2507` | swappable in `config/models.conf`; strong alts: Gemma-4-12B, Qwen2.5-7B, Trendyol-8B, Kumru-2B-Instruct |
+| Teacher | `Qwen/Qwen2.5-72B-Instruct` (proven, 97.5% yield) | alts via `TEACHER=`: `Qwen3-235B-A22B-Instruct-2507` (strongest, ~120GB 4bit → MIG OFF), `Qwen3-32B` (dense, fits slice) |
+| Medical baseline (benchmark-only) | `google/medgemma-1.5-4b-it` (~91% MedQA) | in `config/benchmark_models.conf`; compares a real medical model vs our fine-tunes |
+
+- **Gemma 4 lineup**: E2B (~4GB), **E4B (~8GB, default)**, 12B unified, 26B-A4B MoE,
+  31B dense (256K ctx) — all multimodal (text/image/audio). Use `*-it`.
+- **Qwen3**: use the **Instruct-2507 (non-thinking)** variants so cards stay clean
+  JSON (thinking variants emit `<think>` blocks). Qwen3-Max is API-only (>1T), not usable here.
+- **Turkish**: Kumru-2B (native, from-scratch, Oct-2025) has an `-Instruct` variant;
+  Trendyol-8B / Qwen2.5-7B rank near the top for Turkish if you want a bigger student.
 
 - **Gemma 4 is out** (`google/gemma-4-E4B-it`, ~4.5B effective, **multimodal**
   text/image/audio). We fine-tune its language part for this text card task. It

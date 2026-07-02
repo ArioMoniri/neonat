@@ -171,6 +171,28 @@ def specs_from_registry(run):
     return specs
 
 
+def specs_from_extra(path):
+    """Benchmark-only external baselines (base, no adapter) from a name|id|gated file."""
+    specs = []
+    if not path or not os.path.exists(path):
+        return specs
+    tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) < 2:
+            continue
+        name, hf_id = parts[0], parts[1]
+        gated = parts[2] if len(parts) > 2 else "0"
+        if gated == "1" and not tok:
+            print(f"==> skip baseline {name} (gated, no HF token)")
+            continue
+        specs.append((f"{name}-baseline", hf_id, ""))
+    return specs
+
+
 def main():
     ap = argparse.ArgumentParser(description="Benchmark models on the neoperi task.")
     ap.add_argument("--benchmark", default="data/benchmark/benchmark.jsonl")
@@ -178,6 +200,8 @@ def main():
                     help='"label|base_id|adapter_dir" (adapter optional); repeatable')
     ap.add_argument("--from-registry", default=None,
                     help="build base+ft specs from config/models.conf for run name")
+    ap.add_argument("--extra-registry", default=None,
+                    help="benchmark-only baselines file (name|id|gated), e.g. MedGemma")
     ap.add_argument("--out", default="data/benchmark/leaderboard")
     ap.add_argument("--dry-run", action="store_true", help="stub scorer, no models")
     args = ap.parse_args()
@@ -190,6 +214,8 @@ def main():
     specs = [tuple((s.split("|") + ["", ""])[:3]) for s in args.model]
     if args.from_registry:
         specs += specs_from_registry(args.from_registry)
+    if args.extra_registry:
+        specs += specs_from_extra(args.extra_registry)
     if not specs and not args.dry_run:
         sys.exit("ABORT: no models given (--model / --from-registry) — or use --dry-run.")
 

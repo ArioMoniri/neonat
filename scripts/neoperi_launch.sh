@@ -30,8 +30,10 @@ CORPUS="data/corpus/passages.jsonl"
 SYNTH="${SYNTH:-data/processed/task_sft.synth.full.jsonl}"
 TOKEN_FILE="$PROJECT/.hf_token"
 
+# Self-bootstrap: set up the venv on first run so this is a true single entrypoint.
 if [ ! -f "$PROJECT/env.sh" ] || [ ! -d "$PROJECT/.venv" ]; then
-  echo "ERROR: run scripts/setup_server.sh first (no venv/env.sh)." >&2; exit 1
+  echo "==> First run: no venv yet — running setup_server.sh ..."
+  bash "$PROJECT/scripts/setup_server.sh"
 fi
 
 # --- Does the plan need a gated (Gemma) model? -------------------------------
