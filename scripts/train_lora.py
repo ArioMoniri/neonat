@@ -426,8 +426,13 @@ def apply_ct(tokenizer, messages, **kwargs):
 
 def ct_ids(tokenizer, messages, **kwargs):
     """Return a flat list[int] of token ids from apply_chat_template, robust to
-    transformers versions that return a BatchEncoding/dict or a batched list."""
-    out = apply_ct(tokenizer, messages, tokenize=True, **kwargs)
+    transformers versions that return a BatchEncoding/dict or a batched list.
+    Falls back to plain concatenation if the template itself errors."""
+    try:
+        out = apply_ct(tokenizer, messages, tokenize=True, **kwargs)
+    except Exception:  # noqa: BLE001  — degrade instead of crashing the run
+        text = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in messages)
+        return list(tokenizer(text, add_special_tokens=True)["input_ids"])
     if hasattr(out, "input_ids"):
         out = out.input_ids
     elif isinstance(out, dict):
@@ -473,15 +478,23 @@ def ensure_chat_and_pad(tokenizer):
 # ----------------------------------------------------------------------------
 def make_encoder(tokenizer, max_len):
     eot_id = response_terminator_id(tokenizer)   # family-aware turn terminator
+    errs = {"n": 0}
 
     def encode(example):
-        msgs = example["messages"]
-        prompt_ids = ct_ids(tokenizer, msgs[:-1], add_generation_prompt=True)
-        response_ids = list(tokenizer(
-            msgs[-1]["content"], add_special_tokens=False)["input_ids"]) + [eot_id]
+        try:
+            msgs = example["messages"]
+            prompt_ids = ct_ids(tokenizer, msgs[:-1], add_generation_prompt=True)
+            response_ids = list(tokenizer(
+                msgs[-1]["content"], add_special_tokens=False)["input_ids"]) + [eot_id]
+        except Exception as e:  # noqa: BLE001 — drop the row, never kill the run
+            errs["n"] += 1
+            if errs["n"] <= 3:
+                print(f"==> encode skip ({type(e).__name__}: {e}) — row dropped.")
+            return {"input_ids": [eot_id], "attention_mask": [1],
+                    "labels": [-100], "n_supervised": 0}
 
-        input_ids = prompt_ids + response_ids
-        labels = [-100] * len(prompt_ids) + response_ids
+        input_ids = list(prompt_ids) + list(response_ids)
+        labels = [-100] * len(prompt_ids) + list(response_ids)
 
         # Left-truncate to keep the (tail) assistant span if over length.
         if len(input_ids) > max_len:

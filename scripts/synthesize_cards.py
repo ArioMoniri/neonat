@@ -202,6 +202,8 @@ def main():
                     help="raise if cards get truncated (vignette+lists can be long)")
     ap.add_argument("--dry-run", action="store_true",
                     help="use a stub teacher (no model/GPU) to test the pipeline")
+    ap.add_argument("--append", action="store_true",
+                    help="GROW an existing --out file (dedup) instead of overwriting")
     args = ap.parse_args()
 
     if not os.path.exists(args.passages):
@@ -252,7 +254,17 @@ def main():
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     kept, dropped = 0, 0
     drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "decision_like": 0, "dup": 0}
-    with open(args.out, "w", encoding="utf-8") as out_fh:
+    # --append GROWS an existing set (dedup against what's already there) instead
+    # of overwriting — so you never lose already-generated cards.
+    mode, seen_global = "w", set()
+    if args.append and os.path.exists(args.out):
+        mode = "a"
+        for line in open(args.out, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                seen_global.add(line[:400])
+        print(f"==> APPEND mode: {len(seen_global)} existing card(s) kept.")
+    with open(args.out, mode, encoding="utf-8") as out_fh:
         for i, p in enumerate(passages, 1):
             pid = p.get("passage_id", f"p{i}")
             seen_cards = set()                    # dedup identical variants per passage
@@ -300,7 +312,13 @@ def main():
                 vignette = (obj.get("vignette") or "Sentetik hasta bağlamı")
                 row = build_row(card, vignette, p["passage"],
                                 {**p, "teacher": teacher_name, "variant": v})
-                out_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                line = json.dumps(row, ensure_ascii=False)
+                if line[:400] in seen_global:     # already in the appended file
+                    drops["dup"] += 1
+                    dropped += 1
+                    continue
+                seen_global.add(line[:400])
+                out_fh.write(line + "\n")
                 kept += 1
             if i % 25 == 0 or i == len(passages):
                 print(f"    [{i}/{len(passages)}] kept={kept} dropped={dropped} {drops}")

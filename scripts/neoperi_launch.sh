@@ -102,9 +102,10 @@ run_distill() {
   echo "### [distill] teacher -> grounded TR cards"
   mig_teacher_guard
   [ -f "$CORPUS" ] || run_corpus
+  local ap=(); [ "${APPEND:-0}" = "1" ] && ap=(--append)   # grow, don't overwrite
   python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
     --teacher "${TEACHER:-Qwen/Qwen2.5-72B-Instruct}" --limit "${LIMIT:-400}" \
-    --variants "${VARIANTS:-1}"
+    --variants "${VARIANTS:-1}" "${ap[@]}"
 }
 # Gemma-4/MedGemma are multimodal: their processor imports timm (vision) and
 # librosa/soundfile (audio) even for text-only use, and Gemma-4 needs a very recent
