@@ -48,6 +48,15 @@ if ! command -v "$PY" >/dev/null 2>&1; then
 fi
 echo "==> Using $("$PY" --version 2>&1) at $(command -v "$PY")"
 
+# Self-heal: a C compiler is needed by Triton/some builds. Install if missing.
+if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+  echo "==> No C compiler found — installing build-essential (best effort)."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y build-essential || \
+      echo "    (apt install failed; HF path still works without a compiler)"
+  fi
+fi
+
 # --- GPU (warn only) ---
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "==> GPU detected:"

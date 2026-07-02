@@ -128,8 +128,16 @@ mig_teacher_guard() {
     exit 1
   fi
 }
+ensure_build_tools() {
+  if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 \
+     && command -v apt-get >/dev/null 2>&1; then
+    echo "==> Installing a C compiler (build-essential) — self-heal."
+    apt-get update -y && apt-get install -y build-essential || true
+  fi
+}
 run_train() {
   echo "### [train] fine-tune all registry students"
+  ensure_build_tools
   ensure_gemma_deps
   [ -f "$SYNTH" ] || run_distill
   RUN="$RUN" EPOCHS="${EPOCHS:-2}" LORA_R="${LORA_R:-16}" MODELS="${MODELS:-}" \

@@ -69,7 +69,9 @@ CONFIG = {
     "weight_decay":   0.001,
     "batch_size":     4,
     "grad_accum":     4,
-    "use_unsloth":    True,           # auto-fallback to plain HF if unavailable
+    "use_unsloth":    False,          # OFF by default: Unsloth needs Triton+gcc and
+                                      # lags new torch; the HF+bnb path is reliable.
+                                      # Opt in with --unsloth if your box supports it.
     "output_dir":     "models/kumru-neoperi-lora",
     "default_data":   "data/processed/task_sft.jsonl",
     "smoke_steps":    20,
@@ -685,7 +687,9 @@ def main():
     ap.add_argument("--smoke-only", action="store_true", help="run ~20 steps then stop")
     ap.add_argument("--base-model", default=None, help="override base model id")
     ap.add_argument("--output-dir", default=None, help="override adapter output dir")
-    ap.add_argument("--no-unsloth", action="store_true", help="force HF fallback path")
+    ap.add_argument("--no-unsloth", action="store_true", help="force HF path (default)")
+    ap.add_argument("--unsloth", action="store_true",
+                    help="opt into Unsloth (needs Triton+gcc and a compatible torch)")
     ap.add_argument("--allow-synthetic", action="store_true",
                     help="also accept machine-generated rows (provenance.source=='auto'); "
                          "the run is labelled synthetic and cannot earn a clinical RELEASE_OK")
@@ -709,6 +713,8 @@ def main():
         CONFIG["base_model"] = args.base_model
     if args.no_unsloth:
         CONFIG["use_unsloth"] = False
+    if getattr(args, "unsloth", False):
+        CONFIG["use_unsloth"] = True
     # Apply capacity/scale overrides.
     for cli, key in (("epochs", "epochs"), ("lora_r", "lora_r"), ("lora_alpha", "lora_alpha"),
                      ("lr", "learning_rate"), ("max_seq_len", "max_seq_len"),
