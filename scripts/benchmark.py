@@ -396,9 +396,18 @@ def specs_from_registry(run):
             continue
         specs.append((f"{name}-base", hf_id, ""))
         adapter = os.path.join("models", f"{name}-neoperi-{run}")
-        if os.path.isdir(adapter):
+        if os.path.isdir(adapter) and not _is_encoder_dir(adapter):
             specs.append((f"{name}-ft", hf_id, adapter))
     return specs
+
+
+def _is_encoder_dir(path):
+    """Never load an ENCODER (retrieval/NER) as a card generator."""
+    p = os.path.join(path, "PROVENANCE.json")
+    try:
+        return json.load(open(p, encoding="utf-8")).get("kind") == "encoder"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def specs_from_extra(path):

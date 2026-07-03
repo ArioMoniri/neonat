@@ -131,10 +131,17 @@ def _jats_extract(root):
     return "\n".join(paras), license_
 
 
+# Obvious PII to drop (HF medical text is NOT guaranteed de-identified): TR national
+# id (11 digits), emails, long digit runs / phone-like sequences.
+_PII = re.compile(r"\b\d{11}\b|[\w.+-]+@[\w-]+\.\w+|\b\d{3}[\s-]?\d{3}[\s-]?\d{4}\b")
+
+
 def _emit(seen, rows, source, license_, url, topic, text):
     import hashlib
     for ch in _chunks(text):
         if not RELEVANCE.search(ch):
+            continue
+        if _PII.search(ch):        # skip chunks with obvious PII
             continue
         key = hashlib.sha256(ch.encode("utf-8")).hexdigest()
         if key in seen:
@@ -275,9 +282,13 @@ def src_hfds(rows, seen, ds_ids, max_total, max_per_ds=4000):
         got = 0
         try:
             ds = load_dataset(ds_id, split="train", streaming=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"    [hfds] load failed {ds_id}: {e}")
-            continue
+        except Exception:  # noqa: BLE001  — no 'train' split? use the first available
+            try:
+                dd = load_dataset(ds_id, streaming=True)
+                ds = dd[next(iter(dd))]
+            except Exception as e:  # noqa: BLE001
+                print(f"    [hfds] load failed {ds_id}: {e}")
+                continue
         for ex in ds:
             if len(rows) >= max_total or got >= max_per_ds:
                 break
@@ -378,11 +389,12 @@ def main():
 
     rows, seen = [], set()
     wanted = [s.strip() for s in args.sources.split(",") if s.strip()]
-    unvetted = [s for s in wanted if s in ("urls", "exa")]
+    # urls/exa/hfds are not license- or PII-vetted by us — require explicit opt-in.
+    unvetted = [s for s in wanted if s in ("urls", "exa", "hfds")]
     if unvetted and not args.accept_unvetted_license:
-        print(f"    [skip] {unvetted} carry NO license vetting; re-run with "
+        print(f"    [skip] {unvetted} carry NO license/PII vetting; re-run with "
               "--accept-unvetted-license to include them (you confirm usage rights).")
-        wanted = [s for s in wanted if s not in ("urls", "exa")]
+        wanted = [s for s in wanted if s not in ("urls", "exa", "hfds")]
     print(f"==> Building corpus from sources={wanted} (limit {args.limit})")
     if "europepmc" in wanted:
         src_europepmc(rows, seen, topics, args.per_topic, args.pause, args.limit)

@@ -64,9 +64,14 @@ def main():
     ap.add_argument("--corpus", default="data/corpus/passages.jsonl")
     ap.add_argument("--extra-hf", action="append", default=[], help="extra HF dataset id(s)")
     ap.add_argument("--base", default="dbmdz/bert-base-turkish-cased",
-                    help="encoder base (BERTurk default; try answerdotai/ModernBERT-base)")
+                    help="encoder base (BERTurk default; use answerdotai/ModernBERT-base "
+                         "for a MODERN arch = RoPE + GeGLU + local/global attention)")
     ap.add_argument("--from-scratch", action="store_true",
-                    help="random-init a MODERN-arch encoder from --base's config (experimental)")
+                    help="random-init the encoder from --base's config (keep tokenizer). "
+                         "Pair with a ModernBERT base for a modern-architecture from-zero encoder.")
+    ap.add_argument("--hidden", type=int, default=0, help="from-scratch: override hidden size")
+    ap.add_argument("--layers", type=int, default=0, help="from-scratch: override #layers")
+    ap.add_argument("--heads", type=int, default=0, help="from-scratch: override #attn heads")
     ap.add_argument("--out", default="models/neoperi-encoder")
     ap.add_argument("--epochs", type=float, default=3)
     ap.add_argument("--max-len", type=int, default=256)
@@ -81,22 +86,41 @@ def main():
                               DataCollatorForLanguageModeling, Trainer, TrainingArguments)
     from datasets import Dataset
 
+    # ModernBERT (the modern arch: RoPE + GeGLU + local/global attention) needs a
+    # recent transformers. Fail fast with a clear message rather than KeyError.
+    if args.from_scratch or "modernbert" in args.base.lower():
+        import transformers
+        from packaging import version
+        if version.parse(transformers.__version__) < version.parse("4.48.0"):
+            sys.exit(f"ModernBERT/modern-arch needs transformers>=4.48 "
+                     f"(have {transformers.__version__}); run: pip install -U 'transformers>=4.48'")
+
     print("=" * 70)
     print(f"neoperi ENCODER  base={args.base}  "
-          f"mode={'FROM-SCRATCH' if args.from_scratch else 'domain-adaptive'}")
+          f"mode={'FROM-SCRATCH (modern arch)' if args.from_scratch else 'domain-adaptive'}")
     print("=" * 70)
 
     tok = AutoTokenizer.from_pretrained(args.base)
+    if tok.mask_token_id is None:
+        sys.exit("ABORT: tokenizer has no [MASK] token; MLM needs one.")
     if args.from_scratch:
-        cfg = AutoConfig.from_pretrained(args.base)
-        model = AutoModelForMaskedLM.from_config(cfg)   # random init, modern arch from base cfg
-        print("==> Random-initialized encoder (architecture only from base config).")
+        cfg = AutoConfig.from_pretrained(args.base)   # architecture (+vocab) from base
+        for attr, val in (("hidden_size", args.hidden), ("num_hidden_layers", args.layers),
+                          ("num_attention_heads", args.heads)):
+            if val and hasattr(cfg, attr):
+                setattr(cfg, attr, val)
+        model = AutoModelForMaskedLM.from_config(cfg)   # RANDOM weights, modern arch
+        print(f"==> Random-init encoder: {getattr(cfg,'num_hidden_layers','?')}L "
+              f"/ {getattr(cfg,'hidden_size','?')}h / {getattr(cfg,'num_attention_heads','?')} heads "
+              f"({cfg.model_type}).")
     else:
         model = AutoModelForMaskedLM.from_pretrained(args.base)
+    if model.get_input_embeddings().num_embeddings < len(tok):
+        model.resize_token_embeddings(len(tok))
 
     if args.selftest:
         texts = ["Yenidoğan sarılığında total serum bilirubin gebelik haftasına göre "
-                 "yorumlanır. Prematüre bebeklerde fototerapi eşiği daha düşüktür."] * 32
+                 "yorumlanır. Prematüre bebeklerde fototerapi eşiği daha düşüktür."] * 64
     else:
         texts = load_texts(args.corpus, args.extra_hf)
     if len(texts) < 8:
@@ -104,10 +128,22 @@ def main():
                  "(build_corpus.py with sources=europepmc,pubmed,hfds).")
     print(f"==> {len(texts)} training passages.")
 
+    # Domain-adaptive MLM: concatenate + group into fixed blocks so NO token is
+    # wasted and every position contributes (BioBERTurk/TurkRadBERT recipe).
     def tok_fn(batch):
-        return tok(batch["text"], truncation=True, max_length=args.max_len)
-    ds = Dataset.from_dict({"text": texts}).map(
+        return tok(batch["text"], return_special_tokens_mask=True)
+    tokd = Dataset.from_dict({"text": texts}).map(
         tok_fn, batched=True, remove_columns=["text"], desc="tokenizing")
+    block = args.max_len
+
+    def group_texts(ex):
+        concat = {k: sum(ex[k], []) for k in ex}
+        total = (len(concat["input_ids"]) // block) * block
+        if total == 0:
+            return {k: [] for k in concat}
+        return {k: [v[i:i + block] for i in range(0, total, block)] for k, v in concat.items()}
+    ds = tokd.map(group_texts, batched=True, desc="grouping into blocks")
+    print(f"==> {len(ds)} MLM blocks of {block} tokens.")
     collator = DataCollatorForLanguageModeling(tok, mlm=True, mlm_probability=args.mlm_prob)
 
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()

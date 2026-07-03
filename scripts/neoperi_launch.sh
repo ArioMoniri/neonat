@@ -179,7 +179,11 @@ run_bench() {
 run_encoder() {
   echo "### [encoder] domain-adaptive Turkish neoperi encoder (retrieval/NER)"
   [ -f "$CORPUS" ] || run_corpus
-  ensure_gemma_deps   # ensures a recent transformers
+  # ModernBERT / from-scratch modern arch needs transformers>=4.48 + packaging.
+  if [ "${FROM_SCRATCH:-0}" = "1" ] || echo "${ENCODER_BASE:-}" | grep -qi modernbert; then
+    echo "==> Ensuring transformers>=4.48 + packaging for the modern encoder arch."
+    python -m pip install -U "transformers>=4.48" packaging || true
+  fi
   local fs=(); [ "${FROM_SCRATCH:-0}" = "1" ] && fs=(--from-scratch)
   python scripts/train_encoder.py --corpus "$CORPUS" \
     --base "${ENCODER_BASE:-dbmdz/bert-base-turkish-cased}" \

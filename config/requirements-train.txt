@@ -18,6 +18,10 @@ peft==0.13.2
 bitsandbytes==0.44.1
 sentencepiece==0.2.0
 protobuf==4.25.3
+packaging>=23.0
+# NOTE: the ModernBERT / modern-arch encoder path (train_encoder.py --from-scratch or
+# --base answerdotai/ModernBERT-base) needs transformers>=4.48 — the launcher's
+# encoder stage upgrades it on demand; the pinned 4.44.2 covers the LoRA fine-tunes.
 # corpus building (build_corpus.py): HTTP + HTML/PDF parsing for open-source data
 requests==2.32.3
 beautifulsoup4==4.12.3
