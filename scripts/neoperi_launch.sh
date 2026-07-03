@@ -167,9 +167,11 @@ run_mcq() {
   echo "### [mcq] synthetic knowledge probe (teacher-generated)"
   mig_teacher_guard
   [ -f "$CORPUS" ] || run_corpus
+  # Author the MCQ probe with a DIFFERENT model than the distillation teacher when
+  # possible (avoids self-grading; set MCQ_TEACHER to override).
   python scripts/build_mcq.py --passages "$CORPUS" --train "$SYNTH" \
     --grounded data/benchmark/benchmark.jsonl \
-    --teacher "${TEACHER:-Qwen/Qwen2.5-72B-Instruct}" --n "${MCQ_N:-100}" \
+    --teacher "${MCQ_TEACHER:-${TEACHER:-Qwen/Qwen2.5-72B-Instruct}}" --n "${MCQ_N:-100}" \
     --out data/benchmark/mcq.jsonl || echo "==> MCQ build skipped/failed (non-fatal)."
 }
 run_bench() {
@@ -240,7 +242,7 @@ case "$STAGE" in
   bench)   run_bench ;;
   encoder) preflight; run_encoder ;;
   all)     preflight; run_train; run_mcq; run_bench
-           [ "${WITH_ENCODER:-1}" = "1" ] && run_encoder ;;   # full pipeline incl. encoder
+           [ "${WITH_ENCODER:-0}" = "1" ] && run_encoder ;;   # encoder is opt-in (WITH_ENCODER=1)
   *) echo "unknown stage: $STAGE (use corpus|distill|train|mcq|bench|encoder|all)" >&2; exit 2 ;;
 esac
 echo "==> neoperi_launch stage '$STAGE' complete."

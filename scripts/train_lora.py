@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-all-active"
+NEOPERI_VERSION = "2026-07-04-acuity+goldeval"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -93,12 +93,20 @@ GUARDRAIL_SYSTEM = (
     "değerlendirilecek tetkikler öner. Asla tanı koyma, ilaç/order verme veya "
     "doz önerme. Kartı şu JSON şemasıyla üret: {\"onerilen_sorular\":[], "
     "\"onerilen_tetkikler\":[], \"eksik_veriler\":[], \"kaynak\":\"\", "
-    "\"uyari\":\"\"}. Klinik olarak kritik veriler eksikse bunları "
-    "'eksik_veriler' altında listele. Öneriler yalnızca verilen kılavuza "
-    "dayanmalı; kılavuzda dayanak yoksa öneri üretme."
+    "\"uyari\":\"\", \"kirmizi_bayraklar\":[]}. Klinik olarak kritik veriler "
+    "eksikse bunları 'eksik_veriler' altında listele. Pasajda gecikmeye "
+    "tahammülü olmayan acil bulgular (ör. letarji, kötü perfüzyon, apne, "
+    "konvülziyon, safralı kusma, siyanoz) varsa 'kirmizi_bayraklar' altında "
+    "belirt ve gecikmeden sorumlu hekime danışılmasını öner — ancak yine de "
+    "tanı/doz/order verme. Öneriler yalnızca verilen kılavuza dayanmalı; "
+    "kılavuzda dayanak yoksa öneri üretme."
 )
 CARD_KEYS = ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler", "kaynak", "uyari")
 CARD_LIST_KEYS = ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler")
+# Optional ACUITY field: guideline-grounded red flags + "escalate now" — surfaces
+# urgency (omission/false-reassurance is the lethal neonatal failure mode) while
+# staying inside "suggest-only". Backward-compatible: cards without it still validate.
+OPTIONAL_CARD_KEYS = ("kirmizi_bayraklar",)
 # Lexical red-flags (suggestions must propose questions/tests, not decisions).
 # Surfaced as WARNINGS only — Turkish "tanı"/"doz" legitimately appear inside
 # suggested *questions* (e.g. "Sepsis tanısı düşünüldü mü?"), so this must not
@@ -169,7 +177,8 @@ def validate_card(card):
     'valid card' means exactly the same thing at train and eval time."""
     if not isinstance(card, dict):
         return False, "card is not a JSON object"
-    extra = [k for k in card if k not in CARD_KEYS]
+    allowed = set(CARD_KEYS) | set(OPTIONAL_CARD_KEYS)
+    extra = [k for k in card if k not in allowed]
     if extra:
         return False, f"card has unexpected keys {extra}"
     if any(k not in card for k in CARD_KEYS):
@@ -177,6 +186,10 @@ def validate_card(card):
     for k in CARD_LIST_KEYS:
         if not isinstance(card[k], list) or not all(isinstance(x, str) for x in card[k]):
             return False, f"card['{k}'] must be a list of strings"
+    if "kirmizi_bayraklar" in card and not (
+            isinstance(card["kirmizi_bayraklar"], list)
+            and all(isinstance(x, str) for x in card["kirmizi_bayraklar"])):
+        return False, "card['kirmizi_bayraklar'] must be a list of strings"
     if not isinstance(card["kaynak"], str) or not isinstance(card["uyari"], str):
         return False, "kaynak/uyari must be strings"
     if not card["uyari"].strip():

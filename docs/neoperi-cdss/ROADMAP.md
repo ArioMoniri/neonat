@@ -45,6 +45,32 @@ across models on synthetic data. It is **not** clinical validation. A clinician-
 authored held-out set + expert rating is the next tier and is required before any
 claim of clinical usefulness.
 
+## Design-panel verdict (engineering + clinical) — both "MOSTLY sound"
+A principal-engineer and a board-certified neonatologist reviewed the whole outline.
+Both said the spine is coherent and the safety/provenance posture is strong; both
+flagged the same two things, now addressed or on the critical path:
+
+- **Clinical #1 — acuity/escalation gap (ADDRESSED).** The design guarded against the
+  model *doing too much* but not against *falsely reassuring a clinician past a
+  deteriorating newborn* (omission/delay is the lethal neonatal failure mode). Added
+  an optional **`kirmizi_bayraklar`** card field (guideline-grounded red flags +
+  "gecikmeden sorumlu hekime danışın" escalation, still no diagnosis/dose), wired into
+  the guardrail, teacher prompt, validator, and a new benchmark **`acuity`** metric +
+  occult-sick red-team cases. Backward-compatible (old cards still valid).
+- **Engineering #1 — validate the ruler (SCAFFOLDED, now blocking).** The benchmark is
+  steered by metrics of unknown accuracy on synthetic data. `scripts/gold_eval.py`
+  builds a clinician rating sheet and computes **inter-rater κ + correlation of each
+  reference-free metric vs clinician axes** (grounding/safety/acuity/usefulness). Until
+  those correlate, treat the leaderboard as plumbing-validation only.
+- **Roster (your call):** all 9 students are ACTIVE/available. The architect's advice:
+  for *trustworthy signal*, run a curated 3 (`MODELS="kumru,qwen3-4b,trendyol8b"`) and
+  reinvest the freed H200-hours into the gold set — more models on an unvalidated ruler
+  is precision theater. Everything stays available; `MODELS=` chooses scope per run.
+- Also: MCQ can be authored by a different model than the distillation teacher
+  (`MCQ_TEACHER=`) to avoid self-grading; the encoder is opt-in in `all` (`WITH_ENCODER=1`).
+- **Still open (clinician):** time-window awareness (sepsis/HIE), grounded-but-wrong
+  (stale passage) handling, and a *mechanically-enforced* release gate.
+
 ## Scaling the model & data — what's real (July 2026)
 - **Can't grow Kumru's parameters.** A trained model's weights are bound to its
   architecture; you can't add parameters and keep it working. Lever = a **bigger

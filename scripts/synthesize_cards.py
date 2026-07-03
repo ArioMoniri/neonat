@@ -58,9 +58,13 @@ TEACHER_SYSTEM = (
     "DEĞERLENDİRİLECEK tetkikler öner. "
     "(4) Pasajda olmayan kritik verileri 'eksik_veriler' altında belirt. "
     "(5) 'kaynak' alanına sana verilen passage_id'yi aynen yaz. "
+    "(6) Vinyette/pasajda gecikmeye tahammülü olmayan acil bulgular (letarji, "
+    "kötü perfüzyon, apne, konvülziyon, safralı kusma, siyanoz) varsa "
+    "'kirmizi_bayraklar' altında yaz ve gecikmeden sorumlu hekime danışılmasını "
+    "öner (yine de tanı/doz verme); yoksa boş liste bırak. "
     "Çıktı şeması: {\"vignette\":\"...\",\"onerilen_sorular\":[],"
     "\"onerilen_tetkikler\":[],\"eksik_veriler\":[],\"kaynak\":\"<passage_id>\","
-    "\"uyari\":\"...\"}"
+    "\"uyari\":\"...\",\"kirmizi_bayraklar\":[]}"
 )
 
 
@@ -125,8 +129,9 @@ def to_card(obj, passage_id):
         "eksik_veriler": obj.get("eksik_veriler", []),
         "kaynak": passage_id,                       # force correct grounding
         "uyari": (obj.get("uyari") or DEFAULT_UYARI),
+        "kirmizi_bayraklar": obj.get("kirmizi_bayraklar", []),   # acuity/escalation
     }
-    for k in ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler"):
+    for k in ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler", "kirmizi_bayraklar"):
         v = card[k]
         if isinstance(v, str):
             v = [v]
