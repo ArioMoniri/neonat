@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-gemma-lora-discover"
+NEOPERI_VERSION = "2026-07-03-safetygate-scoped"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
