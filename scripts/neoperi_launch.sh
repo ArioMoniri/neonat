@@ -239,7 +239,8 @@ case "$STAGE" in
   mcq)     preflight; run_mcq ;;
   bench)   run_bench ;;
   encoder) preflight; run_encoder ;;
-  all)     preflight; run_train; run_mcq; run_bench ;;   # train() chains corpus+distill if missing
+  all)     preflight; run_train; run_mcq; run_bench
+           [ "${WITH_ENCODER:-1}" = "1" ] && run_encoder ;;   # full pipeline incl. encoder
   *) echo "unknown stage: $STAGE (use corpus|distill|train|mcq|bench|encoder|all)" >&2; exit 2 ;;
 esac
 echo "==> neoperi_launch stage '$STAGE' complete."
