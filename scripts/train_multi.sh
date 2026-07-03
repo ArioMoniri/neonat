@@ -25,7 +25,8 @@ DATA="${1:-data/processed/task_sft.synth.full.jsonl}"
 [ -f "$DATA" ] || { echo "ERROR: training data not found: $DATA" >&2; exit 1; }
 
 RUN="${RUN:-synth}"
-EPOCHS="${EPOCHS:-2}"; LORA_R="${LORA_R:-16}"; LR="${LR:-1e-4}"; MAXSEQ="${MAXSEQ:-2048}"
+EPOCHS="${EPOCHS:-2}"; LORA_R="${LORA_R:-16}"; LORA_ALPHA="${LORA_ALPHA:-$((LORA_R*2))}"
+LR="${LR:-1e-4}"; MAXSEQ="${MAXSEQ:-2048}"
 ONLY="${MODELS:-}"     # optional comma list to restrict which registry rows run
 CONF="$PROJECT/config/models.conf"
 [ -f "$CONF" ] || { echo "ERROR: $CONF missing" >&2; exit 1; }
@@ -55,7 +56,8 @@ while IFS='|' read -r name hf_id gated flags; do
   # shellcheck disable=SC2086
   if python scripts/train_lora.py "$DATA" --allow-synthetic \
         --base-model "$hf_id" --output-dir "$out" \
-        --epochs "$EPOCHS" --lora-r "$LORA_R" --lr "$LR" --max-seq-len "$MAXSEQ" \
+        --epochs "$EPOCHS" --lora-r "$LORA_R" --lora-alpha "$LORA_ALPHA" \
+        --lr "$LR" --max-seq-len "$MAXSEQ" \
         $flags; then
     trained+=("$name")
   else

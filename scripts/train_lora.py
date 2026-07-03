@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-safetygate-scoped"
+NEOPERI_VERSION = "2026-07-03-hardcore-rigor"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -583,10 +583,10 @@ def build_trainer(model, tokenizer, train_ds, eval_ds, backend, max_steps=-1):
         print("==> WARNING: bf16 unavailable; falling back to fp16 (QLoRA is more "
               "prone to loss spikes/NaN under fp16 — watch the smoke loss).")
     full_run = max_steps < 0
-    # Gradient checkpointing is already enabled at model-load time (Unsloth's own
-    # impl, or prepare_model_for_kbit_training for HF). Do NOT re-enable it here —
-    # double-application warns/errors and can double-register hooks.
-    args = TrainingArguments(
+    do_eval = full_run and eval_ds is not None
+    # Rigor: on the full run, evaluate periodically and KEEP THE BEST checkpoint by
+    # eval_loss (guards against the last-epoch overfit the light run couldn't see).
+    common = dict(
         output_dir=CONFIG["output_dir"],
         per_device_train_batch_size=CONFIG["batch_size"],
         gradient_accumulation_steps=CONFIG["grad_accum"],
@@ -597,19 +597,26 @@ def build_trainer(model, tokenizer, train_ds, eval_ds, backend, max_steps=-1):
         weight_decay=CONFIG["weight_decay"],
         lr_scheduler_type="cosine",
         logging_steps=5,
-        save_strategy="no" if not full_run else "epoch",
-        eval_strategy=("epoch" if (full_run and eval_ds is not None) else "no"),
-        bf16=bf16_ok,
-        fp16=not bf16_ok,
-        gradient_checkpointing=False,
+        bf16=bf16_ok, fp16=not bf16_ok,
+        gradient_checkpointing=False,   # already enabled at model load
         max_grad_norm=1.0,
         optim="paged_adamw_8bit",
         report_to="none",
         seed=CONFIG["seed"],
     )
+    if do_eval:
+        common.update(
+            eval_strategy="steps", save_strategy="steps",
+            eval_steps=CONFIG.get("eval_steps", 25), save_steps=CONFIG.get("eval_steps", 25),
+            save_total_limit=2, load_best_model_at_end=True,
+            metric_for_best_model="eval_loss", greater_is_better=False)
+    else:
+        common.update(eval_strategy="no",
+                      save_strategy=("epoch" if full_run else "no"))
+    args = TrainingArguments(**common)
     return Trainer(
         model=model, args=args, train_dataset=train_ds,
-        eval_dataset=(eval_ds if full_run else None), data_collator=collator,
+        eval_dataset=(eval_ds if do_eval else None), data_collator=collator,
     )
 
 

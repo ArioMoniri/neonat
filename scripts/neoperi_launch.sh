@@ -30,6 +30,24 @@ CORPUS="data/corpus/passages.jsonl"
 SYNTH="${SYNTH:-data/processed/task_sft.synth.full.jsonl}"
 TOKEN_FILE="$PROJECT/.hf_token"
 
+# --- PROFILE presets: one switch to scale everything. Explicit env vars still win.
+# PROFILE=light|standard|hardcore  (default standard). hardcore = big data + deep train.
+PROFILE="${PROFILE:-standard}"
+case "$PROFILE" in
+  light)    _LIMIT=400;  _PT=8;  _VAR=1; _EP=2; _LR=16;  _LA=16;  _MS=2048; _MCQ=20;  _GND=60;  _PAR=1 ;;
+  standard) _LIMIT=800;  _PT=20; _VAR=2; _EP=3; _LR=32;  _LA=64;  _MS=2048; _MCQ=60;  _GND=120; _PAR=1 ;;
+  hardcore) _LIMIT=3000; _PT=60; _VAR=3; _EP=4; _LR=64;  _LA=128; _MS=2048; _MCQ=200; _GND=300; _PAR=3 ;;
+  *) echo "unknown PROFILE=$PROFILE (light|standard|hardcore)"; exit 2 ;;
+esac
+# Env overrides win over the profile.
+LIMIT="${LIMIT:-$_LIMIT}"; PER_TOPIC="${PER_TOPIC:-$_PT}"; VARIANTS="${VARIANTS:-$_VAR}"
+EPOCHS="${EPOCHS:-$_EP}"; LORA_R="${LORA_R:-$_LR}"; LORA_ALPHA="${LORA_ALPHA:-$_LA}"
+MAXSEQ="${MAXSEQ:-$_MS}"; MCQ_N="${MCQ_N:-$_MCQ}"; GROUNDED="${GROUNDED:-$_GND}"
+PARAPHRASES="${PARAPHRASES:-$_PAR}"
+export LIMIT PER_TOPIC VARIANTS EPOCHS LORA_R LORA_ALPHA MAXSEQ MCQ_N GROUNDED PARAPHRASES
+echo "==> PROFILE=$PROFILE  LIMIT=$LIMIT PER_TOPIC=$PER_TOPIC VARIANTS=$VARIANTS"
+echo "    EPOCHS=$EPOCHS LORA_R=$LORA_R LORA_ALPHA=$LORA_ALPHA MAXSEQ=$MAXSEQ MCQ_N=$MCQ_N GROUNDED=$GROUNDED PARAPHRASES=$PARAPHRASES"
+
 # Self-bootstrap: set up the venv on first run so this is a true single entrypoint.
 if [ ! -f "$PROJECT/env.sh" ] || [ ! -d "$PROJECT/.venv" ]; then
   echo "==> First run: no venv yet — running setup_server.sh ..."
@@ -141,8 +159,8 @@ run_train() {
   ensure_build_tools
   ensure_gemma_deps
   [ -f "$SYNTH" ] || run_distill
-  RUN="$RUN" EPOCHS="${EPOCHS:-2}" LORA_R="${LORA_R:-16}" MODELS="${MODELS:-}" \
-    bash scripts/train_multi.sh "$SYNTH"
+  RUN="$RUN" EPOCHS="$EPOCHS" LORA_R="$LORA_R" LORA_ALPHA="$LORA_ALPHA" \
+    MAXSEQ="$MAXSEQ" MODELS="${MODELS:-}" bash scripts/train_multi.sh "$SYNTH"
 }
 run_mcq() {
   echo "### [mcq] synthetic knowledge probe (teacher-generated)"

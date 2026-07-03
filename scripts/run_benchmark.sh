@@ -15,13 +15,15 @@ SYNTH="${SYNTH:-data/processed/task_sft.synth.full.jsonl}"
 BENCH="data/benchmark/benchmark.jsonl"
 
 if [ ! -f "$BENCH" ]; then
-  echo "==> Building held-out benchmark"
+  echo "==> Building held-out benchmark (grounded=${GROUNDED:-120})"
   python scripts/build_benchmark.py --passages data/corpus/passages.jsonl \
-      --train "$SYNTH" --redteam data/redteam/redteam.example.jsonl --out "$BENCH"
+      --train "$SYNTH" --redteam data/redteam/redteam.example.jsonl \
+      --grounded "${GROUNDED:-120}" --out "$BENCH"
 fi
-echo "==> Scoring registry models + external baselines (run=$RUN)"
+echo "==> Scoring registry models + external baselines (run=$RUN, paraphrases=${PARAPHRASES:-1})"
 EXTRA="config/benchmark_models.conf"
 MCQ="data/benchmark/mcq.jsonl"
 python scripts/benchmark.py --benchmark "$BENCH" --from-registry "$RUN" \
+    --paraphrases "${PARAPHRASES:-1}" \
     ${EXTRA:+--extra-registry "$EXTRA"} \
     $( [ -f "$MCQ" ] && echo "--mcq $MCQ" )
