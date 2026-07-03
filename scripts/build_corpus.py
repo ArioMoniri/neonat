@@ -257,6 +257,44 @@ def src_urls(rows, seen, urls, pause, max_total):
         time.sleep(pause)
 
 
+def src_hfds(rows, seen, ds_ids, max_total, max_per_ds=4000):
+    """Pull TURKISH medical text from Hugging Face datasets (streamed), keep only
+    neonatology/perinatology-relevant passages. This adds native Turkish text (also
+    improves cross-language grounding vs the English literature sources)."""
+    try:
+        from datasets import load_dataset
+    except Exception as e:  # noqa: BLE001
+        print(f"    [hfds] datasets lib unavailable ({e}); skipping.")
+        return
+    text_fields = ("text", "content", "article", "body", "abstract", "makale",
+                   "icerik", "metin", "document", "output", "answer")
+    for ds_id in ds_ids:
+        ds_id = ds_id.strip()
+        if not ds_id or ds_id.startswith("#"):
+            continue
+        got = 0
+        try:
+            ds = load_dataset(ds_id, split="train", streaming=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"    [hfds] load failed {ds_id}: {e}")
+            continue
+        for ex in ds:
+            if len(rows) >= max_total or got >= max_per_ds:
+                break
+            field = next((f for f in text_fields if isinstance(ex.get(f), str) and ex[f].strip()), None)
+            if not field:
+                # fall back to the first long string value
+                field = next((k for k, v in ex.items() if isinstance(v, str) and len(v) > 80), None)
+            if not field:
+                continue
+            _emit(seen, rows, f"hf:{ds_id}", "see dataset card", f"https://huggingface.co/datasets/{ds_id}",
+                  "turkish-medical", ex[field])
+            got += 1
+        print(f"    [hfds] {ds_id}: corpus now {len(rows)} passages")
+        if len(rows) >= max_total:
+            return
+
+
 def src_exa(rows, seen, topics, per_topic, pause, max_total):
     key = os.environ.get("EXA_API_KEY")
     if not key:
@@ -311,13 +349,15 @@ def main():
     ap = argparse.ArgumentParser(description="Build an open neoperi passage corpus.")
     ap.add_argument("--out", default="data/corpus/passages.jsonl")
     ap.add_argument("--sources", default="europepmc,pubmed",
-                    help="comma list of: europepmc,pubmed,urls,exa")
+                    help="comma list of: europepmc,pubmed,hfds,urls,exa")
     ap.add_argument("--limit", type=int, default=400, help="max total passages")
     ap.add_argument("--per-topic", type=int, default=8, help="articles fetched per topic")
     ap.add_argument("--pause", type=float, default=0.34, help="seconds between API calls")
     ap.add_argument("--urls", default=None, help="file with one URL per line (for 'urls')")
     ap.add_argument("--url", action="append", default=[], help="a URL (repeatable)")
     ap.add_argument("--topics", default=None, help="file with one topic/query per line")
+    ap.add_argument("--hf-datasets", default="config/hf_datasets.txt",
+                    help="file with one HF dataset id per line (for the 'hfds' source)")
     ap.add_argument("--selftest", action="store_true", help="offline: write a stub corpus")
     ap.add_argument("--accept-unvetted-license", action="store_true",
                     help="required to include 'urls'/'exa' sources, whose text is NOT "
@@ -355,6 +395,14 @@ def main():
             src_urls(rows, seen, urls, args.pause, args.limit)
     if "exa" in wanted:
         src_exa(rows, seen, topics, args.per_topic, args.pause, args.limit)
+    if "hfds" in wanted:
+        ds_ids = []
+        if os.path.exists(args.hf_datasets):
+            ds_ids = [l.strip() for l in open(args.hf_datasets, encoding="utf-8") if l.strip()]
+        if not ds_ids:
+            print(f"    [hfds] no dataset ids in {args.hf_datasets} — skipping.")
+        else:
+            src_hfds(rows, seen, ds_ids, args.limit)
 
     if not rows:
         sys.exit("ABORT: no passages collected. Check network/sources, or use --selftest.")

@@ -45,6 +45,25 @@ across models on synthetic data. It is **not** clinical validation. A clinician-
 authored held-out set + expert rating is the next tier and is required before any
 claim of clinical usefulness.
 
+## Scaling the model & data — what's real (July 2026)
+- **Can't grow Kumru's parameters.** A trained model's weights are bound to its
+  architecture; you can't add parameters and keep it working. Lever = a **bigger
+  Turkish-capable base** (Trendyol-8B, Qwen3-8B/14B, Gemma-4-12B — commented in
+  `config/models.conf`), not param-surgery on Kumru.
+- **"DeepSeek-V4 attention on Kumru" is not possible.** V4 (Apr 2026) uses hybrid
+  Compressed-Sparse + Heavily-Compressed Attention + mHC — a *pretraining-time*
+  choice fused into weights. You cannot swap attention into a pretrained decoder.
+  A **from-scratch** model could use a modern arch, but from-scratch Turkish neoperi
+  generation needs billions of tokens and would be far worse than fine-tuning.
+- **Turkish neoperi ENCODER (`train_encoder.py`).** For the retrieval/NER side we
+  do **domain-adaptive MLM** of a Turkish encoder (BERTurk default; ModernBERT
+  option) on the corpus — the evidence (BioBERTurk, TurkRadBERT) says this beats
+  from-scratch in a low-resource domain. `--from-scratch` exists (modern arch) but
+  is flagged as worse. Stage: `neoperi_launch.sh encoder`.
+- **More/native data.** `build_corpus.py` now has an `hfds` source pulling Turkish
+  medical HF datasets (`config/hf_datasets.txt`) — native Turkish text also improves
+  the cross-language grounding metric. `standard`/`hardcore` profiles include it.
+
 ## Not built (on purpose): world models / "EchoJEPA"
 JEPA / EchoJEPA-style systems are **self-supervised video/imaging world models**
 (e.g. echocardiography representation learning). They are a different modality and

@@ -25,6 +25,7 @@ cp "$REPO/scripts/"*.sh "$STAGE/scripts/"
 cp "$REPO/config/requirements-train.txt" "$STAGE/config/"
 cp "$REPO/config/models.conf" "$STAGE/config/"
 cp "$REPO/config/benchmark_models.conf" "$STAGE/config/"
+cp "$REPO/config/hf_datasets.txt" "$STAGE/config/"
 cp -R "$REPO/docs/neoperi-cdss" "$STAGE/docs/"
 cp -R "$REPO/.claude/agents/." "$STAGE/.claude/agents/"
 

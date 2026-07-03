@@ -1,0 +1,7 @@
+# Hugging Face dataset ids pulled by the 'hfds' corpus source (Turkish medical text).
+# Only neonatology/perinatology-relevant passages are kept (RELEVANCE filter).
+# Check each dataset's license/card before use. Swap freely.
+alibayram/turkish-hospital-medical-articles
+umutertugrul/turkish-hospital-medical-articles
+# tugrulkaya/Turkish-clinicalNER
+# nezahatkorkmaz/turkish-medical-vqa-evaluated

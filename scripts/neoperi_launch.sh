@@ -34,11 +34,12 @@ TOKEN_FILE="$PROJECT/.hf_token"
 # PROFILE=light|standard|hardcore  (default standard). hardcore = big data + deep train.
 PROFILE="${PROFILE:-standard}"
 case "$PROFILE" in
-  light)    _LIMIT=400;  _PT=8;  _VAR=1; _EP=2; _LR=16;  _LA=16;  _MS=2048; _MCQ=20;  _GND=60;  _PAR=1 ;;
-  standard) _LIMIT=800;  _PT=20; _VAR=2; _EP=3; _LR=32;  _LA=64;  _MS=2048; _MCQ=60;  _GND=120; _PAR=1 ;;
-  hardcore) _LIMIT=3000; _PT=60; _VAR=3; _EP=4; _LR=64;  _LA=128; _MS=2048; _MCQ=200; _GND=300; _PAR=3 ;;
+  light)    _LIMIT=400;  _PT=8;  _VAR=1; _EP=2; _LR=16;  _LA=16;  _MS=2048; _MCQ=20;  _GND=60;  _PAR=1; _SRC="europepmc,pubmed" ;;
+  standard) _LIMIT=800;  _PT=20; _VAR=2; _EP=3; _LR=32;  _LA=64;  _MS=2048; _MCQ=60;  _GND=120; _PAR=1; _SRC="europepmc,pubmed,hfds" ;;
+  hardcore) _LIMIT=3000; _PT=60; _VAR=3; _EP=4; _LR=64;  _LA=128; _MS=2048; _MCQ=200; _GND=300; _PAR=3; _SRC="europepmc,pubmed,hfds" ;;
   *) echo "unknown PROFILE=$PROFILE (light|standard|hardcore)"; exit 2 ;;
 esac
+SOURCES="${SOURCES:-$_SRC}"; export SOURCES
 # Env overrides win over the profile.
 LIMIT="${LIMIT:-$_LIMIT}"; PER_TOPIC="${PER_TOPIC:-$_PT}"; VARIANTS="${VARIANTS:-$_VAR}"
 EPOCHS="${EPOCHS:-$_EP}"; LORA_R="${LORA_R:-$_LR}"; LORA_ALPHA="${LORA_ALPHA:-$_LA}"
@@ -175,6 +176,15 @@ run_bench() {
   echo "### [bench] leaderboard (+ MCQ probe if present)"
   RUN="$RUN" SYNTH="$SYNTH" bash scripts/run_benchmark.sh
 }
+run_encoder() {
+  echo "### [encoder] domain-adaptive Turkish neoperi encoder (retrieval/NER)"
+  [ -f "$CORPUS" ] || run_corpus
+  ensure_gemma_deps   # ensures a recent transformers
+  local fs=(); [ "${FROM_SCRATCH:-0}" = "1" ] && fs=(--from-scratch)
+  python scripts/train_encoder.py --corpus "$CORPUS" \
+    --base "${ENCODER_BASE:-dbmdz/bert-base-turkish-cased}" \
+    --epochs "${ENCODER_EPOCHS:-3}" --out "models/neoperi-encoder-${RUN}" "${fs[@]}"
+}
 
 # -------- Interactive PREFLIGHT: pop up and ask for anything missing ----------
 planned_students() {
@@ -224,7 +234,8 @@ case "$STAGE" in
   train)   preflight; run_train ;;
   mcq)     preflight; run_mcq ;;
   bench)   run_bench ;;
+  encoder) preflight; run_encoder ;;
   all)     preflight; run_train; run_mcq; run_bench ;;   # train() chains corpus+distill if missing
-  *) echo "unknown stage: $STAGE (use corpus|distill|train|mcq|bench|all)" >&2; exit 2 ;;
+  *) echo "unknown stage: $STAGE (use corpus|distill|train|mcq|bench|encoder|all)" >&2; exit 2 ;;
 esac
 echo "==> neoperi_launch stage '$STAGE' complete."
