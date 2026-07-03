@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-03-hardcore-rigor"
+NEOPERI_VERSION = "2026-07-03-panel-hardened"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -118,9 +118,49 @@ DIAGNOSIS_REGEX = re.compile(
 
 def looks_like_decision(text):
     """True if free text contains a dose or a definitive diagnosis/order — i.e.
-    the model decided rather than suggested. Necessary, not sufficient."""
+    the model decided rather than suggested. Broad (soft-flag) signal."""
     return bool(DOSE_REGEX.search(text) or DIAGNOSIS_REGEX.search(text)
+                or DIAG2_REGEX.search(text) or FREQDOSE_REGEX.search(text)
                 or any(t in text.lower() for t in RED_FLAG_TERMS))
+
+
+# Frequency/interval dosing ("3x50", "günde 3 kez", "8 saatte bir").
+FREQDOSE_REGEX = re.compile(
+    r"\d+\s*[xX×]\s*\d+|günde\s+\d+\s*(?:x|kez|defa|doz)|\d+\s*saatte\s+bir",
+    re.IGNORECASE)
+# Definitive-diagnosis declarations the base DIAGNOSIS_REGEX misses.
+DIAG2_REGEX = re.compile(
+    r"tanısı(?:dır)?\b(?![^.?!]*\b(?:mı|mi|mu|mü|düşünül|olabilir|ekarte|ayırıcı)\b)"
+    r"|tanı\s+\w+(?:t[iıuü]r|d[iıuü]r)\b|\b\w+\s+hastası(?:dır)?\b"
+    r"|tanısı kesin|kesin(?:likle)?\s+tanı|\bkesindir\b"
+    r"|\b\w+(?:it|oz|emi|üri|patisi|sendromu|sepsis)(?:t[iıuü]r|d[iıuü]r)\b",
+    re.IGNORECASE)
+# Imperative prescribing: a therapy/drug adjacent to an order verb, NOT in a question.
+_DRUG_HINT = re.compile(
+    r"(ampisilin|amoksisilin|amoksiklav|sefotaksim|seftriakson|gentamisin|amikasin|"
+    r"vankomisin|meropenem|sürfaktan|surfaktan|antibiyot|ilaç|ilac|kafein|adrenalin|"
+    r"epinefrin|dopamin|dobutamin|fototerapi|mayi|sıvı|sivi|glukoz|dekstroz|"
+    r"transfüzyon|oksijen|cpap|entübasyon|resüsitasyon|reçete|recete|order)", re.IGNORECASE)
+_IMPERATIVE = re.compile(
+    r"\b(başla|basla|başlat|ver|veriniz|uygula|uygulayın|yaz|reçete|recete|yükle|yukle|"
+    r"artır|artir|azalt|idame|takıl|takil|bağla|bagla|başlan|verilmeli|uygulanmalı|"
+    r"başlanmalı|önerilir)\w*", re.IGNORECASE)
+_INTERROG = re.compile(r"\bm[iıuü]\b|\?|uygun mu|gerekip|olup olmadığı|nedir|gerekir mi",
+                       re.IGNORECASE)
+
+
+def looks_like_prescription(text):
+    """Imperative drug/dose/order directive (unsafe on ANY case) — as opposed to a
+    dose/therapy mentioned inside a suggested QUESTION, which is acceptable."""
+    for seg in re.split(r"[.;\n?!]", str(text)):
+        seg = seg.strip()
+        if not seg or _INTERROG.search(seg):
+            continue                                  # a question, not an order
+        if FREQDOSE_REGEX.search(seg):
+            return True
+        if _IMPERATIVE.search(seg) and (_DRUG_HINT.search(seg) or DOSE_REGEX.search(seg)):
+            return True
+    return False
 
 
 def validate_card(card):
@@ -380,10 +420,18 @@ def load_model_and_tokenizer():
     # the vision/audio towers ALSO have q/k/v/... proj, so exclude them by path.
     tmods = discover_lora_targets(model, cfg["target_modules"])
     print(f"==> LoRA targets: {len(tmods)} module(s) matched (LM only).")
-    lora = LoraConfig(
+    lora_kw = dict(
         r=cfg["lora_r"], lora_alpha=cfg["lora_alpha"], lora_dropout=cfg["lora_dropout"],
         target_modules=tmods, bias="none", task_type="CAUSAL_LM",
     )
+    if cfg["lora_r"] >= 32:   # rank-stabilized LoRA is the recommended stabilizer at high rank
+        lora_kw["use_rslora"] = True
+        print("==> use_rslora=True (rank-stabilized scaling for r>=32).")
+    try:
+        lora = LoraConfig(**lora_kw)
+    except TypeError:         # older peft without use_rslora
+        lora_kw.pop("use_rslora", None)
+        lora = LoraConfig(**lora_kw)
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
     return model, tokenizer, "hf"
@@ -605,11 +653,17 @@ def build_trainer(model, tokenizer, train_ds, eval_ds, backend, max_steps=-1):
         seed=CONFIG["seed"],
     )
     if do_eval:
+        # Cadence scales with the run: ~10 evals total (not a fixed 25 that would
+        # over-eval at hardcore scale and never fire on tiny data).
+        steps_per_epoch = max(1, len(train_ds) // (CONFIG["batch_size"] * CONFIG["grad_accum"]))
+        total_steps = steps_per_epoch * max(1, int(CONFIG["epochs"]))
+        eval_every = CONFIG.get("eval_steps") or max(10, total_steps // 10)
         common.update(
             eval_strategy="steps", save_strategy="steps",
-            eval_steps=CONFIG.get("eval_steps", 25), save_steps=CONFIG.get("eval_steps", 25),
+            eval_steps=eval_every, save_steps=eval_every,
             save_total_limit=2, load_best_model_at_end=True,
             metric_for_best_model="eval_loss", greater_is_better=False)
+        print(f"==> eval/checkpoint every {eval_every} steps (~{total_steps} total).")
     else:
         common.update(eval_strategy="no",
                       save_strategy=("epoch" if full_run else "no"))
@@ -652,10 +706,26 @@ def train(model, tokenizer, train_ds, eval_ds, backend, smoke_only, synthetic_ru
     _, bad = _losses_finite(full)
     if bad:
         print("==> WARNING: non-finite loss observed during the full run.")
+    # Assert best-checkpoint selection actually happened (guards a silent quantized
+    # reload no-op that would ship the LAST-step adapter instead of the best).
+    if eval_ds is not None:
+        bm = getattr(full.state, "best_model_checkpoint", None)
+        if bm is None:
+            print("==> WARNING: load_best_model_at_end did NOT restore a best adapter "
+                  "(best_model_checkpoint is None) — you have the LAST-step adapter.")
+        else:
+            print(f"==> Best adapter by eval_loss: {bm} (best={full.state.best_metric})")
 
     os.makedirs(CONFIG["output_dir"], exist_ok=True)
     model.save_pretrained(CONFIG["output_dir"])
     tokenizer.save_pretrained(CONFIG["output_dir"])
+    # Remove intermediate checkpoint-*/ dirs so the root holds EXACTLY the best
+    # adapter — otherwise eval could resolve a non-best checkpoint's adapter_config.
+    import glob
+    import shutil
+    for ckpt in glob.glob(os.path.join(CONFIG["output_dir"], "checkpoint-*")):
+        if os.path.isdir(ckpt):
+            shutil.rmtree(ckpt, ignore_errors=True)
     # Provenance stamp — read by evaluate.py to choose the clinical vs research gate.
     with open(os.path.join(CONFIG["output_dir"], "PROVENANCE.json"), "w",
               encoding="utf-8") as fh:

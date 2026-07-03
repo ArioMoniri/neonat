@@ -52,7 +52,7 @@ TEACHER_SYSTEM = (
     "karar destek 'öneri kartı' eğitim örneği üretmektir. "
     "SADECE geçerli JSON üret, başka hiçbir şey yazma. Kurallar: "
     "(1) Önce pasajla ilgili KISA, sentetik (gerçek olmayan) bir Türkçe hasta "
-    "vinyeti yaz (vignette). "
+    "olgu senaryosu (vignette) yaz. "
     "(2) Öneriler SADECE pasajdaki bilgiye dayanmalı. "
     "(3) Asla tanı koyma, ilaç/doz/order yazma; sadece SORULACAK sorular ve "
     "DEĞERLENDİRİLECEK tetkikler öner. "
