@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-04-acuity+goldeval"
+NEOPERI_VERSION = "2026-07-04-yield+trim-fix"
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -138,10 +138,13 @@ FREQDOSE_REGEX = re.compile(
     re.IGNORECASE)
 # Definitive-diagnosis declarations the base DIAGNOSIS_REGEX misses.
 DIAG2_REGEX = re.compile(
-    r"tanısı(?:dır)?\b(?![^.?!]*\b(?:mı|mi|mu|mü|düşünül|olabilir|ekarte|ayırıcı)\b)"
-    r"|tanı\s+\w+(?:t[iıuü]r|d[iıuü]r)\b|\b\w+\s+hastası(?:dır)?\b"
+    r"tanısıdır\b(?![^.?!]*\b(?:mı|mi|mu|mü|düşünül|olabilir|ekarte|ayırıcı)\b)"
+    r"|\b\w+\s+hastasıdır\b"
     r"|tanısı kesin|kesin(?:likle)?\s+tanı|\bkesindir\b"
-    r"|\b\w+(?:it|oz|emi|üri|patisi|sendromu|sepsis)(?:t[iıuü]r|d[iıuü]r)\b",
+    # definitive diagnosis: a REAL neonatal disease name + copula (whitelist, so we
+    # don't match ordinary Turkish words ending in -dir like 'aittir'/'glukozdur').
+    r"|\b(sepsis|menenjit|pnömoni|pnomoni|asfiksi|ensefalopati|konvülziyon|"
+    r"nekrotizan|hipoglisemi|hiperbilirubinemi)(?:t[iı]r|d[iı]r)\b",
     re.IGNORECASE)
 # Imperative prescribing: a therapy/drug adjacent to an order verb, NOT in a question.
 _DRUG_HINT = re.compile(

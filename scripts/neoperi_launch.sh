@@ -60,7 +60,9 @@ needs_token() {
   case "$STAGE" in train|all) ;; *) return 1 ;; esac
   local only="${MODELS:-}"
   while IFS='|' read -r name _hf gated _flags; do
-    name="$(echo "$name" | xargs)"; gated="$(echo "$gated" | xargs)"
+    case "$name" in \#*|"") continue ;; esac       # skip comments BEFORE trimming
+    name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    gated="$(printf '%s' "$gated" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [ -z "$name" ] && continue; case "$name" in \#*) continue ;; esac
     if [ -n "$only" ] && ! echo ",$only," | grep -q ",$name,"; then continue; fi
     [ "$gated" = "1" ] && return 0
@@ -196,8 +198,9 @@ run_encoder() {
 planned_students() {
   local only="${MODELS:-}"
   while IFS='|' read -r name _hf gated _f; do
-    name="$(echo "$name" | xargs)"; [ -z "$name" ] && continue
-    case "$name" in \#*) continue ;; esac
+    case "$name" in \#*|"") continue ;; esac       # skip comments BEFORE trimming
+    name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ -z "$name" ] && continue
     if [ -n "$only" ] && ! echo ",$only," | grep -q ",$name,"; then continue; fi
     echo -n "$name "
   done < "$PROJECT/config/models.conf"

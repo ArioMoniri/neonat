@@ -41,8 +41,9 @@ echo "============================================================"
 
 trained=(); skipped=()
 while IFS='|' read -r name hf_id gated flags; do
-  name="$(echo "$name" | xargs)"; hf_id="$(echo "$hf_id" | xargs)"
-  gated="$(echo "$gated" | xargs)"; flags="$(echo "${flags:-}" | xargs)"
+  _tr() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }  # trim (quote-safe)
+  name="$(_tr "$name")"; hf_id="$(_tr "$hf_id")"
+  gated="$(_tr "$gated")"; flags="$(_tr "${flags:-}")"
   [ -z "$name" ] && continue
   case "$name" in \#*) continue ;; esac                 # comment line
   if [ -n "$ONLY" ] && ! echo ",$ONLY," | grep -q ",$name,"; then continue; fi

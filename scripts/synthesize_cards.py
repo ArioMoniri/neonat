@@ -258,7 +258,7 @@ def main():
     print(f"==> {len(passages)} passage(s) x {variants} variant(s) = up to {total} cards")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     kept, dropped = 0, 0
-    drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "decision_like": 0, "dup": 0}
+    drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "prescribe": 0, "dup": 0}
     # --append GROWS an existing set (dedup against what's already there) instead
     # of overwriting — so you never lose already-generated cards.
     mode, seen_global = "w", set()
@@ -304,9 +304,11 @@ def main():
                     dropped += 1
                     continue
                 blob = json.dumps(card, ensure_ascii=False)
-                # Reject decision-like leakage (dose/diagnosis) before it trains in.
-                if TL.looks_like_decision(blob):
-                    drops["decision_like"] += 1
+                # Reject actual PRESCRIPTIONS (imperative order/dose) — but keep cards
+                # that merely mention a guideline threshold/dose inside a question or
+                # test. (Dropping on the broad looks_like_decision rejected ~all cards.)
+                if TL.looks_like_prescription(blob):
+                    drops["prescribe"] += 1
                     dropped += 1
                     continue
                 if blob in seen_cards:            # identical variant — skip
