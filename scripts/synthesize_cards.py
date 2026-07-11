@@ -169,7 +169,7 @@ def load_teacher(model_id):
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, quantization_config=bnb, torch_dtype=torch.bfloat16, device_map="auto")
+        model_id, quantization_config=bnb, device_map="auto", **TL.hf_dtype_kwargs())
     model.eval()
     return model, tok
 

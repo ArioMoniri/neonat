@@ -198,7 +198,7 @@ def load_model(base_id, adapter_dir):
         tok = AutoProcessor.from_pretrained(tok_src).tokenizer
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token   # OK for greedy scoring only (no loss); never copy to training
-    load_kw = dict(quantization_config=bnb, torch_dtype=torch.bfloat16, device_map="auto")
+    load_kw = dict(quantization_config=bnb, device_map="auto", **TL.hf_dtype_kwargs())
     try:
         model = AutoModelForCausalLM.from_pretrained(base_id, **load_kw)
     except Exception:  # noqa: BLE001  (multimodal, e.g. Gemma 4)

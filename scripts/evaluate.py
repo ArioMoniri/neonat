@@ -61,8 +61,7 @@ def load_model(base_model, adapter_dir):
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
     tok = AutoTokenizer.from_pretrained(adapter_dir, use_fast=True)
     base = AutoModelForCausalLM.from_pretrained(
-        base_model, quantization_config=bnb, torch_dtype=torch.bfloat16,
-        device_map="auto")
+        base_model, quantization_config=bnb, device_map="auto", **TL.hf_dtype_kwargs())
     if base.get_input_embeddings().num_embeddings < len(tok):
         base.resize_token_embeddings(len(tok))
     model = PeftModel.from_pretrained(base, adapter_dir)

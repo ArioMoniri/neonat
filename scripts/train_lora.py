@@ -52,7 +52,21 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-04-drop-unsloth"
+NEOPERI_VERSION = "2026-07-04-tf5-dtype"
+
+
+def hf_dtype_kwargs():
+    """Correct dtype kwarg across transformers versions: 5.x/4.56+ use `dtype`,
+    older use the now-deprecated `torch_dtype`. Keeps model loads clean on the
+    cutting-edge transformers 5.x (July 2026) without deprecation errors."""
+    import torch
+    try:
+        import transformers
+        from packaging import version
+        use_new = version.parse(transformers.__version__) >= version.parse("4.56.0")
+    except Exception:  # noqa: BLE001
+        use_new = False
+    return {"dtype": torch.bfloat16} if use_new else {"torch_dtype": torch.bfloat16}
 
 # ----------------------------------------------------------------------------
 # INLINE CONFIG  (edit here — these are the knobs from the spec)
@@ -419,8 +433,8 @@ def load_model_and_tokenizer():
     if cfg.get("attn_impl"):
         # Gemma trains more stably with eager attention (logit soft-capping).
         extra["attn_implementation"] = cfg["attn_impl"]
-    load_kw = dict(quantization_config=bnb, torch_dtype=torch.bfloat16,
-                   device_map="auto", **extra)
+    load_kw = dict(quantization_config=bnb, device_map="auto",
+                   **hf_dtype_kwargs(), **extra)
     # Text CausalLM first; multimodal (Gemma 4 = image/text/audio) needs the
     # image-text-to-text class, whose LM submodule we then LoRA-tune for text.
     try:
