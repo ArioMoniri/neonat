@@ -88,16 +88,10 @@ fi
 echo "==> Installing core requirements from $REQ"
 python -m pip install -r "$REQ"
 
-if python -c "import unsloth" >/dev/null 2>&1; then
-  echo "==> Unsloth already present — not reinstalling (avoids churning pinned deps)."
-else
-  echo "==> Attempting Unsloth (optional fast path; failure is non-fatal)"
-  if python -m pip install -U unsloth; then
-    echo "    Unsloth installed."
-  else
-    echo "    Unsloth not installed — the HF + bitsandbytes fallback will be used."
-  fi
-fi
+# NOTE: Unsloth is intentionally NOT installed. We train on the reliable HF +
+# bitsandbytes path (use_unsloth=False, --no-unsloth). Unsloth needs Triton+gcc,
+# lags new torch, and its transformers<=5.5 pin only churns the environment.
+# To opt in anyway: pip install unsloth, then pass --unsloth to train_lora.
 
 # Write env.sh + MANIFEST BEFORE the diagnostic snapshot, so a pip-freeze hiccup
 # can never leave the run scripts without an env file.
