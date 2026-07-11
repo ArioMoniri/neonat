@@ -63,9 +63,10 @@ def main():
     ap = argparse.ArgumentParser(description="Domain-adaptive Turkish neoperi encoder (MLM).")
     ap.add_argument("--corpus", default="data/corpus/passages.jsonl")
     ap.add_argument("--extra-hf", action="append", default=[], help="extra HF dataset id(s)")
-    ap.add_argument("--base", default="dbmdz/bert-base-turkish-cased",
-                    help="encoder base (BERTurk default; use answerdotai/ModernBERT-base "
-                         "for a MODERN arch = RoPE + GeGLU + local/global attention)")
+    ap.add_argument("--base", default="boun-tabilab/TabiBERT",
+                    help="encoder base (TabiBERT default: Turkish-native ModernBERT = RoPE + "
+                         "FlashAttn + 8k ctx, ~20%% scientific corpus; use dbmdz/bert-base-turkish-cased "
+                         "for classic BERTurk, or answerdotai/ModernBERT-base for a non-TR modern arch)")
     ap.add_argument("--from-scratch", action="store_true",
                     help="random-init the encoder from --base's config (keep tokenizer). "
                          "Pair with a ModernBERT base for a modern-architecture from-zero encoder.")

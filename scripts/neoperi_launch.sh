@@ -121,7 +121,7 @@ run_corpus() {
 }
 run_distill() {
   echo "### [distill] teacher -> grounded TR cards"
-  mig_teacher_guard
+  mig_teacher_guard || exit 1
   [ -f "$CORPUS" ] || run_corpus
   local ap=(); [ "${APPEND:-0}" = "1" ] && ap=(--append)   # grow, don't overwrite
   python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
@@ -147,7 +147,7 @@ mig_teacher_guard() {
   if [ -n "$freemb" ] && [ "$freemb" -lt 130000 ]; then
     echo "ERROR: TEACHER=$TEACHER needs ~130GB (MIG OFF / full H200); this GPU reports ${freemb}MiB." >&2
     echo "       Use TEACHER=Qwen/Qwen2.5-72B-Instruct or Qwen/Qwen3-32B, or disable MIG." >&2
-    exit 1
+    return 1
   fi
 }
 ensure_build_tools() {
@@ -167,7 +167,8 @@ run_train() {
 }
 run_mcq() {
   echo "### [mcq] synthetic knowledge probe (teacher-generated)"
-  mig_teacher_guard
+  # MCQ is a non-fatal probe: never let a too-big teacher discard completed adapters.
+  mig_teacher_guard || { echo "==> MCQ skipped (teacher too big for this GPU); training stands."; return 0; }
   [ -f "$CORPUS" ] || run_corpus
   # Author the MCQ probe with a DIFFERENT model than the distillation teacher when
   # possible (avoids self-grading; set MCQ_TEACHER to override).

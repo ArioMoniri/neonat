@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-04-tf5-dtype"
+NEOPERI_VERSION = "2026-07-11-qdora-acuity"
 
 
 def hf_dtype_kwargs():
@@ -457,12 +457,32 @@ def load_model_and_tokenizer():
     if cfg["lora_r"] >= 32:   # rank-stabilized LoRA is the recommended stabilizer at high rank
         lora_kw["use_rslora"] = True
         print("==> use_rslora=True (rank-stabilized scaling for r>=32).")
+    if cfg.get("use_dora", True):   # DoRA (+4-bit => QDoRA): weight-decomposed LoRA, closes the gap to full-FT
+        lora_kw["use_dora"] = True
+        print("==> use_dora=True (QDoRA weight-decomposed adaptation).")
+    # Self-heal: older peft may lack use_dora/use_rslora — retry, shedding optional keys.
+    lora, last_err = None, None
+    for drop in ([], ["use_dora"], ["use_dora", "use_rslora"]):
+        kw = {k: v for k, v in lora_kw.items() if k not in drop}
+        try:
+            lora = LoraConfig(**kw)
+            if drop:
+                print(f"==> peft rejected {drop}; retried without.")
+            break
+        except TypeError as e:
+            last_err = e
+    if lora is None:
+        raise last_err
     try:
-        lora = LoraConfig(**lora_kw)
-    except TypeError:         # older peft without use_rslora
-        lora_kw.pop("use_rslora", None)
-        lora = LoraConfig(**lora_kw)
-    model = get_peft_model(model, lora)
+        model = get_peft_model(model, lora)
+    except (ValueError, RuntimeError, NotImplementedError) as e:
+        # Some peft/base combos reject DoRA on a quantized base at apply time — fall back to plain LoRA.
+        if getattr(lora, "use_dora", False):
+            print(f"==> DoRA apply failed ({type(e).__name__}: {e}); falling back to plain LoRA.")
+            lora.use_dora = False
+            model = get_peft_model(model, lora)
+        else:
+            raise
     model.print_trainable_parameters()
     return model, tokenizer, "hf"
 
