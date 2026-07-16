@@ -31,8 +31,8 @@
 - **Qwen3** exists but its only >32B option is a 235B MoE (won't fit the slice);
   Qwen2.5-72B is the practical best teacher here.
 - Family-aware trainer: correct **turn-terminator per family** (Gemma
-  `<end_of_turn>`, ChatML `<|im_end|>`, else EOS) so each learns to stop; HF path
-  forced for non-Kumru (Unsloth lags new archs).
+  `<end_of_turn>`, ChatML `<|im_end|>`, else EOS) so each learns to stop, on the
+  Hugging Face + bitsandbytes path.
 
 ## Benchmark
 `build_benchmark.py` assembles a **held-out** set (grounded cases from passages

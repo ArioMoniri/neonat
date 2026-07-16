@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-16-resource-adaptive"
+NEOPERI_VERSION = "2026-07-16-hf-only"
 
 
 def hf_dtype_kwargs():
@@ -86,9 +86,6 @@ CONFIG = {
     "weight_decay":   0.001,
     "batch_size":     4,
     "grad_accum":     4,
-    "use_unsloth":    False,          # OFF by default: Unsloth needs Triton+gcc and
-                                      # lags new torch; the HF+bnb path is reliable.
-                                      # Opt in with --unsloth if your box supports it.
     "output_dir":     "models/kumru-neoperi-lora",
     "default_data":   "data/processed/task_sft.jsonl",
     "smoke_steps":    20,
@@ -317,8 +314,6 @@ DEPS = [
     "torch", "transformers>=4.60", "datasets", "accelerate",
     "peft>=0.13", "bitsandbytes>=0.45", "sentencepiece", "protobuf",
 ]
-# Unsloth is installed separately (pulls a CUDA-matched wheel); optional.
-UNSLOTH_DEP = "unsloth"
 
 
 # ----------------------------------------------------------------------------
@@ -327,11 +322,6 @@ UNSLOTH_DEP = "unsloth"
 def install_deps():
     print("==> Installing core dependencies ...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", *DEPS])
-    print("==> Attempting Unsloth (preferred fast path; optional) ...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", UNSLOTH_DEP])
-    except subprocess.CalledProcessError:
-        print("    Unsloth install failed — the HF+bitsandbytes fallback path will be used.")
     print("==> Dependencies ready.")
 
 
@@ -495,34 +485,10 @@ def load_data(path, allow_synthetic=False):
 
 
 # ----------------------------------------------------------------------------
-# Model + tokenizer:  Unsloth preferred, HF + bitsandbytes fallback
+# Model + tokenizer:  Hugging Face + bitsandbytes 4-bit (QLoRA)
 # ----------------------------------------------------------------------------
 def load_model_and_tokenizer():
     cfg = CONFIG
-    if cfg["use_unsloth"]:
-        try:
-            from unsloth import FastLanguageModel
-            print("==> Loading via Unsloth (fast path).")
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=cfg["base_model"],
-                max_seq_length=cfg["max_seq_len"],
-                load_in_4bit=cfg["load_in_4bit"],
-                dtype=None,
-            )
-            model = FastLanguageModel.get_peft_model(
-                model,
-                r=cfg["lora_r"],
-                lora_alpha=cfg["lora_alpha"],
-                lora_dropout=cfg["lora_dropout"],
-                target_modules=cfg["target_modules"],
-                use_gradient_checkpointing="unsloth",
-                random_state=cfg["seed"],
-            )
-            return model, tokenizer, "unsloth"
-        except Exception as e:  # noqa: BLE001
-            print(f"==> Unsloth unavailable/failed ({e}); using HF + bitsandbytes fallback.")
-
-    # ---- Fallback: plain Hugging Face ----
     import torch
     from transformers import (AutoModelForCausalLM, AutoTokenizer,
                               BitsAndBytesConfig)
@@ -955,30 +921,18 @@ def _flag_ungrounded(tuned_text):
     return ""
 
 
-def sanity_check(model, tokenizer, backend):
+def sanity_check(model, tokenizer, backend="hf"):
     print("\n==> SANITY CHECK (synthetic placeholder vignettes) ...")
-    if backend == "unsloth":
-        try:
-            from unsloth import FastLanguageModel
-            FastLanguageModel.for_inference(model)
-        except Exception:  # noqa: BLE001
-            model.eval()
-    else:
-        model.eval()   # HF path: don't import Unsloth (avoids late-patch warnings)
-
+    model.eval()
     for i, v in enumerate(SANITY_VIGNETTES, 1):
         print(f"\n----- vignette {i} -----")
-        # disable_adapter() is reliable for HF/PEFT; on Unsloth it does not
-        # faithfully reproduce the base forward pass, so we skip it honestly.
-        if backend == "hf":
-            try:
-                with model.disable_adapter():
-                    base = _generate(model, tokenizer, v)
-            except Exception as e:  # noqa: BLE001
-                base = f"[base generation skipped: {e}]"
-            print(f"[BASE ]\n{base}\n")
-        else:
-            print("[BASE ] (skipped on Unsloth path — disable_adapter() is unreliable here)\n")
+        # disable_adapter() reproduces the base forward pass on HF/PEFT.
+        try:
+            with model.disable_adapter():
+                base = _generate(model, tokenizer, v)
+        except Exception as e:  # noqa: BLE001
+            base = f"[base generation skipped: {e}]"
+        print(f"[BASE ]\n{base}\n")
         tuned = _generate(model, tokenizer, v)
         warn = _flag_ungrounded(tuned)
         print(f"[TUNED]\n{tuned}")
@@ -1000,9 +954,10 @@ def main():
     ap.add_argument("--smoke-only", action="store_true", help="run ~20 steps then stop")
     ap.add_argument("--base-model", default=None, help="override base model id")
     ap.add_argument("--output-dir", default=None, help="override adapter output dir")
-    ap.add_argument("--no-unsloth", action="store_true", help="force HF path (default)")
-    ap.add_argument("--unsloth", action="store_true",
-                    help="opt into Unsloth (needs Triton+gcc and a compatible torch)")
+    # Deprecated no-ops (kept so existing configs/commands don't error). HF+bitsandbytes
+    # is the only training path; Unsloth support was removed (it was never used).
+    ap.add_argument("--no-unsloth", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--unsloth", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--allow-synthetic", action="store_true",
                     help="also accept machine-generated rows (provenance.source=='auto'); "
                          "the run is labelled synthetic and cannot earn a clinical RELEASE_OK")
@@ -1024,10 +979,6 @@ def main():
 
     if args.base_model:
         CONFIG["base_model"] = args.base_model
-    if args.no_unsloth:
-        CONFIG["use_unsloth"] = False
-    if getattr(args, "unsloth", False):
-        CONFIG["use_unsloth"] = True
     # Apply capacity/scale overrides.
     for cli, key in (("epochs", "epochs"), ("lora_r", "lora_r"), ("lora_alpha", "lora_alpha"),
                      ("lr", "learning_rate"), ("max_seq_len", "max_seq_len"),
@@ -1036,9 +987,6 @@ def main():
         val = getattr(args, cli)
         if val is not None:
             CONFIG[key] = val
-    # Non-Kumru families are safest on the HF path (Unsloth lags new archs).
-    if "kumru" not in CONFIG["base_model"].lower():
-        CONFIG["use_unsloth"] = False
     if args.output_dir:
         CONFIG["output_dir"] = args.output_dir
     elif args.run_name:

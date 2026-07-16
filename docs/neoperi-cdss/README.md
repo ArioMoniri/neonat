@@ -35,10 +35,10 @@ Smoke test only (plumbing, ~20 steps, no full run):
 python train_lora.py data/processed/task_sft.jsonl --smoke-only
 ```
 
-Force the plain Hugging Face path (skip Unsloth):
+Train (Hugging Face + bitsandbytes 4-bit QLoRA — the only path):
 
 ```bash
-python train_lora.py data/processed/task_sft.jsonl --no-unsloth
+python train_lora.py data/processed/task_sft.jsonl
 ```
 
 Output adapter (LoRA + tokenizer) lands in `models/kumru-neoperi-lora[-<run>]/`.
@@ -97,8 +97,8 @@ well-formed, and grounded — no silent exceptions.
   every target ends on a real stop token (the model learns to stop). Per-example
   supervised-token telemetry is printed as a guard against silent mask corruption.
 - **Pad token handled** — a pad token *distinct from EOS* is set (asserts
-  `pad != eos`); label padding is `-100`. Embeddings are resized on **both** the
-  Unsloth and HF paths if a pad token was added.
+  `pad != eos`); label padding is `-100`. Embeddings are resized if a pad token
+  was added.
 - **Chat template** — uses Kumru's own template; falls back to ChatML if absent.
 - **GPU-adaptive** — reads `nvidia-smi` (incl. MIG) and lowers batch / raises accum if
   memory is tight. On an H200 MIG slice, a 2B 4-bit model fits with huge headroom.

@@ -72,7 +72,7 @@ bash scripts/setup_server.sh
 ```
 
 `setup_server.sh` creates `./.venv`, installs the pinned requirements
-(`config/requirements-train.txt`), tries Unsloth (optional), points the model
+(`config/requirements-train.txt`), points the model
 cache at `./.hf_cache` (so downloads stay inside the project), and writes a
 footprint manifest to `state/MANIFEST.txt`. It is idempotent — safe to re-run.
 

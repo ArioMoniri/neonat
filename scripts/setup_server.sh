@@ -88,10 +88,9 @@ fi
 echo "==> Installing core requirements from $REQ"
 python -m pip install -r "$REQ"
 
-# NOTE: Unsloth is intentionally NOT installed. We train on the reliable HF +
-# bitsandbytes path (use_unsloth=False, --no-unsloth). Unsloth needs Triton+gcc,
-# lags new torch, and its transformers<=5.5 pin only churns the environment.
-# To opt in anyway: pip install unsloth, then pass --unsloth to train_lora.
+# Unsloth is NOT used (HF + bitsandbytes is the only training path). A stale unsloth just
+# pins transformers<=5.5 and prints pip dependency-conflict noise — remove it if present.
+python -m pip uninstall -y unsloth unsloth_zoo >/dev/null 2>&1 || true
 
 # Write env.sh + MANIFEST BEFORE the diagnostic snapshot, so a pip-freeze hiccup
 # can never leave the run scripts without an env file.
