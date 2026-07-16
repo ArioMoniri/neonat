@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-14-union-refusal-agentic"
+NEOPERI_VERSION = "2026-07-14-agentic-statetrack-api"
 
 
 def hf_dtype_kwargs():
@@ -189,10 +189,13 @@ _DRUG_HINT = re.compile(
     r"vankomisin|meropenem|sürfaktan|surfaktan|antibiyot|ilaç|ilac|kafein|adrenalin|"
     r"epinefrin|dopamin|dobutamin|fototerapi|mayi|sıvı|sivi|glukoz|dekstroz|"
     r"transfüzyon|oksijen|cpap|entübasyon|resüsitasyon|reçete|recete|order)", re.IGNORECASE)
+# NB: bare "ver" (give) is bounded as \bver(in|iniz)?\b so it does NOT match the JSON key
+# "verb" or the word "veri/veriler" (data); the -meli/-niz order forms stay in the group.
 _IMPERATIVE = re.compile(
-    r"\b(başla|basla|başlat|ver|veriniz|uygula|uygulayın|yaz|reçete|recete|yükle|yukle|"
-    r"artır|artir|azalt|idame|takıl|takil|bağla|bagla|başlan|verilmeli|uygulanmalı|"
-    r"başlanmalı|önerilir)\w*", re.IGNORECASE)
+    r"\b(başla|basla|başlat|uygula|uygulayın|yaz|reçete|recete|yükle|yukle|"
+    r"artır|artir|azalt|idame|takıl|takil|bağla|bagla|başlan|veriniz|verilmeli|"
+    r"uygulanmalı|başlanmalı|önerilir)\w*"
+    r"|\bver(?:in|iniz)?\b", re.IGNORECASE)
 _INTERROG = re.compile(r"\bm[iıuü]\b|\?|uygun mu|gerekip|olup olmadığı|nedir|gerekir mi",
                        re.IGNORECASE)
 

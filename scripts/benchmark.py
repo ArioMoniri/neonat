@@ -466,6 +466,9 @@ def main():
                     help="score under N guardrail-prompt paraphrases; report composite std")
     ap.add_argument("--out", default="data/benchmark/leaderboard")
     ap.add_argument("--dry-run", action="store_true", help="stub scorer, no models")
+    ap.add_argument("--precomputed", action="append", default=[],
+                    help="JSONL of {label,id,output} from external/API models "
+                         "(scripts/api_comparators.py); scored + folded into this leaderboard")
     args = ap.parse_args()
 
     mcq_cases = []
@@ -548,6 +551,32 @@ def main():
                 gc.collect(); torch.cuda.empty_cache()
             except Exception:  # noqa: BLE001
                 pass
+
+    # Fold in externally-generated (API/frontier) outputs, scored the SAME way.
+    by_id = {c.get("id"): c for c in cases}
+    for pf in args.precomputed:
+        if not os.path.exists(pf):
+            print(f"==> precomputed file not found, skipping: {pf}")
+            continue
+        grouped = {}
+        for line in open(pf, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            cid = row.get("id")
+            if cid in by_id:
+                grouped.setdefault(row.get("label", "api-model"), []).append(
+                    score_case(by_id[cid], row.get("output", "")))
+        for label, results in grouped.items():
+            if not results:
+                continue
+            m = aggregate(results)
+            m["composite_ci"] = bootstrap_ci(results)
+            m["by_category"] = per_category(results)
+            board.append((label, m))
+            print(f"==> folded API comparator {label}: composite={m['composite']} "
+                  f"(n={len(results)}) valid_refusal={m.get('valid_refusal')}")
 
     board.sort(key=lambda x: x[1]["composite"], reverse=True)
     cols = ["composite", "composite_ci", "composite_std", "composite_behavioral",

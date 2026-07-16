@@ -248,6 +248,78 @@ def to_refusal_card(obj, scenario):
 
 
 # ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# AGENTIC exemplars: grounded cards that also carry STATE -> ACTION -> RESULT, with
+# a read-only action verb and non-decisional text. validate_card enforces the verb
+# whitelist + violates_action_policy, so any ordering/decisional output is dropped.
+# ---------------------------------------------------------------------------
+AGENTIC_TEACHER_SYSTEM = (
+    "Sen Türkçe tıbbi veri etiketleme uzmanısın. Pasaja dayalı bir 'öneri kartı' üret "
+    "AMA ek olarak DURUM-EYLEM-SONUÇ farkındalığı ekle. SADECE geçerli JSON. Kurallar: "
+    "(1) Öneriler SADECE pasaja dayalı; 'kaynak' alanına verilen passage_id'yi yaz. "
+    "(2) 'hasta_durumu': {gebelik_haftasi (sayı), postnatal_gun (sayı), aktif_problem "
+    "(kısa), onceki_eylemler: [{eylem, zaman}]} — kısa ve sentetik. "
+    "(3) 'onerilen_eylem': {verb: SADECE şu listeden [sor, gozlemle, "
+    "tetkik_iste_degerlendirme_icin, hekime_danis]; aciklama: EMİR/DOZ/ORDER İÇERMEYEN "
+    "kısa açıklama}. (4) 'eylem_sonucu': {eylem, gozlenen_sonuc (ör. lab değeri 'TSB 18 "
+    "mg/dL'), durum_guncellemesi: KARAR/EŞİK/EMİR İÇERMEYEN, ör. 'hekimle "
+    "değerlendirilmeli'}. (5) 'guven': 0-1 arası sayı. (6) 'gerekce': kısa açıklama. "
+    "ASLA tanı koyma, ilaç/doz/order verme. Şema: {\"vignette\":\"...\","
+    "\"onerilen_sorular\":[],\"onerilen_tetkikler\":[],\"eksik_veriler\":[],"
+    "\"kaynak\":\"<passage_id>\",\"uyari\":\"...\",\"kirmizi_bayraklar\":[],"
+    "\"hasta_durumu\":{\"gebelik_haftasi\":38,\"postnatal_gun\":2,\"aktif_problem\":"
+    "\"...\",\"onceki_eylemler\":[]},\"onerilen_eylem\":{\"verb\":\"hekime_danis\","
+    "\"aciklama\":\"...\"},\"eylem_sonucu\":{\"eylem\":\"...\",\"gozlenen_sonuc\":\"...\","
+    "\"durum_guncellemesi\":\"...\"},\"guven\":0.7,\"gerekce\":\"...\"}")
+
+
+def teacher_generate_agentic(model, tok, passage, passage_id, max_new_tokens=640):
+    import torch
+    msgs = [{"role": "system", "content": AGENTIC_TEACHER_SYSTEM},
+            {"role": "user", "content": build_teacher_prompt(passage, passage_id)}]
+    enc = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                  return_tensors="pt", return_dict=True)
+    dev = model.get_input_embeddings().weight.device
+    enc = {k: v.to(dev) for k, v in enc.items()}
+    n_in = enc["input_ids"].shape[1]
+    with torch.no_grad():
+        out = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=True,
+                             temperature=0.7, top_p=0.9,
+                             pad_token_id=(tok.pad_token_id or tok.eos_token_id),
+                             eos_token_id=tok.eos_token_id)
+    return tok.decode(out[0][n_in:], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+
+
+def to_card_agentic(obj, passage_id):
+    """Grounded card + additive state/action/result. Sanitizes the verb to the read-only
+    whitelist; violates_action_policy (in validate_card) drops any decisional free text."""
+    card = to_card(obj, passage_id)
+    if card is None:
+        return None
+    hd = obj.get("hasta_durumu")
+    if isinstance(hd, dict):
+        card["hasta_durumu"] = hd
+    ae = obj.get("onerilen_eylem")
+    if isinstance(ae, dict):
+        verb = ae.get("verb")
+        if verb not in TL.ACTION_VERBS:
+            verb = "hekime_danis"                      # coerce to a safe read-only verb
+        card["onerilen_eylem"] = {"verb": verb, "aciklama": str(ae.get("aciklama", "")).strip()}
+    es = obj.get("eylem_sonucu")
+    if isinstance(es, dict):
+        card["eylem_sonucu"] = {
+            "eylem": str(es.get("eylem", "")).strip(),
+            "gozlenen_sonuc": str(es.get("gozlenen_sonuc", "")).strip(),
+            "durum_guncellemesi": str(es.get("durum_guncellemesi", "")).strip()}
+    g = obj.get("guven")
+    if isinstance(g, (int, float)) and not isinstance(g, bool):
+        card["guven"] = max(0.0, min(1.0, float(g)))
+    gk = obj.get("gerekce")
+    if isinstance(gk, str) and gk.strip():
+        card["gerekce"] = gk.strip()
+    return card
+
+
 def load_teacher(model_id):
     import torch
     from transformers import (AutoModelForCausalLM, AutoTokenizer,
@@ -298,6 +370,9 @@ def main():
                     help="fraction of the final set that is REFUSAL cards (empty/"
                          "boundary/acuity) — teaches valid abstention. 0.25 -> ~1:3 "
                          "refusal:grounded. Set 0 to disable.")
+    ap.add_argument("--agentic-ratio", type=float, default=0.15,
+                    help="fraction of GROUNDED cards that also carry state->action->"
+                         "result (hasta_durumu/onerilen_eylem/eylem_sonucu). 0 to disable.")
     ap.add_argument("--max-new-tokens", type=int, default=1024,
                     help="raise if cards get truncated (vignette+lists can be long)")
     ap.add_argument("--dry-run", action="store_true",
@@ -335,6 +410,20 @@ def main():
                 "uyari": (ESCALATION_UYARI if scenario == "acuity"
                           else "Eksik veriler tamamlanmalı; hekime danışılmalıdır.")},
                 ensure_ascii=False)
+
+        def gen_ag(passage, pid):
+            return json.dumps({
+                "vignette": "Sentetik vinyet: term yenidoğan, postnatal 2. gün.",
+                "onerilen_sorular": ["Beslenme öyküsü nasıl?"],
+                "onerilen_tetkikler": ["Total serum bilirubin"],
+                "eksik_veriler": ["gebelik haftası"], "kaynak": pid, "uyari": DEFAULT_UYARI,
+                "kirmizi_bayraklar": [],
+                "hasta_durumu": {"gebelik_haftasi": 38, "postnatal_gun": 2,
+                                 "aktif_problem": "sarılık", "onceki_eylemler": []},
+                "onerilen_eylem": {"verb": "hekime_danis", "aciklama": "hekime danışılmalı"},
+                "eylem_sonucu": {"eylem": "TSB istendi", "gozlenen_sonuc": "18 mg/dL",
+                                 "durum_guncellemesi": "fototerapi eşiği hekimle değerlendirilmeli"},
+                "guven": 0.7, "gerekce": "pasaja dayalı"}, ensure_ascii=False)
         teacher_name = f"{args.teacher} (dry-run stub)"
     else:
         model, tok = load_teacher(args.teacher)
@@ -342,6 +431,8 @@ def main():
             model, tok, passage, pid, args.max_new_tokens)
         gen_ref = lambda scenario, passage: teacher_generate_refusal(  # noqa: E731
             model, tok, scenario, passage, min(args.max_new_tokens, 640))
+        gen_ag = lambda passage, pid: teacher_generate_agentic(  # noqa: E731
+            model, tok, passage, pid, min(args.max_new_tokens, 768))
         teacher_name = args.teacher
         # PREFLIGHT: generate ONE card and surface the REAL error/traceback before
         # grinding the whole corpus. A failure here shows exactly what's wrong.
@@ -365,7 +456,10 @@ def main():
 
     variants = max(1, args.variants)
     total = len(passages) * variants
-    print(f"==> {len(passages)} passage(s) x {variants} variant(s) = up to {total} cards")
+    # Every Nth grounded generation carries state->action->result (agentic exemplar).
+    agentic_period = round(1 / args.agentic_ratio) if args.agentic_ratio > 0 else 0
+    print(f"==> {len(passages)} passage(s) x {variants} variant(s) = up to {total} cards"
+          + (f"  (~1/{agentic_period} agentic)" if agentic_period else ""))
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     kept, dropped = 0, 0
     drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "prescribe": 0, "dup": 0}
@@ -384,8 +478,9 @@ def main():
             pid = p.get("passage_id", f"p{i}")
             seen_cards = set()                    # dedup identical variants per passage
             for v in range(variants):
+                ag = bool(agentic_period) and ((i + v) % agentic_period == 0)
                 try:
-                    raw = gen(p["passage"], pid)
+                    raw = (gen_ag if ag else gen)(p["passage"], pid)
                 except Exception as e:  # noqa: BLE001
                     drops["gen_error"] += 1
                     dropped += 1
@@ -403,7 +498,8 @@ def main():
                             "--max-new-tokens 512. Corpus + weights are cached.")
                     continue
                 obj = extract_json(raw)
-                card = to_card(obj, pid) if obj else None
+                card = ((to_card_agentic(obj, pid) if ag else to_card(obj, pid))
+                        if obj else None)
                 if card is None:
                     drops["no_json"] += 1
                     dropped += 1
@@ -428,7 +524,8 @@ def main():
                 seen_cards.add(blob)
                 vignette = (obj.get("vignette") or "Sentetik hasta bağlamı")
                 row = build_row(card, vignette, p["passage"],
-                                {**p, "teacher": teacher_name, "variant": v})
+                                {**p, "teacher": teacher_name, "variant": v,
+                                 "category": ("agentic" if ag else "grounded")})
                 line = json.dumps(row, ensure_ascii=False)
                 if line[:400] in seen_global:     # already in the appended file
                     drops["dup"] += 1

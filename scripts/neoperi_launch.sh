@@ -105,8 +105,10 @@ if [ -z "${NO_TMUX:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&
     "cd '$PROJECT'; NO_TMUX=1 MODELS='${MODELS:-}' \
      SOURCES='${SOURCES:-}' LIMIT='${LIMIT:-}' PER_TOPIC='${PER_TOPIC:-}' \
      VARIANTS='${VARIANTS:-}' TEACHER='${TEACHER:-}' TEACHER_FALLBACK='${TEACHER_FALLBACK:-}' \
-     REFUSAL_RATIO='${REFUSAL_RATIO:-}' APPEND='${APPEND:-}' EPOCHS='${EPOCHS:-}' \
+     REFUSAL_RATIO='${REFUSAL_RATIO:-}' AGENTIC_RATIO='${AGENTIC_RATIO:-}' APPEND='${APPEND:-}' EPOCHS='${EPOCHS:-}' \
      NCBI_API_KEY='${NCBI_API_KEY:-}' NCBI_EMAIL='${NCBI_EMAIL:-}' \
+     ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' OPENAI_API_KEY='${OPENAI_API_KEY:-}' GOOGLE_API_KEY='${GOOGLE_API_KEY:-}' \
+     ANTHROPIC_MODEL='${ANTHROPIC_MODEL:-}' OPENAI_MODEL='${OPENAI_MODEL:-}' GOOGLE_MODEL='${GOOGLE_MODEL:-}' \
      LORA_R='${LORA_R:-}' RUN='$RUN' bash scripts/neoperi_launch.sh '$STAGE'; \
      echo; echo '[stage $STAGE finished — press enter to close]'; read _"
 fi
@@ -135,13 +137,14 @@ run_distill() {
   local teacher="${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}"   # apache-2.0 primary
   local fb="${TEACHER_FALLBACK:-Qwen/Qwen3-32B}"                   # apache-2.0 dense fallback
   local rr="${REFUSAL_RATIO:-0.25}"                                # ~1:3 refusal:grounded
+  local ar="${AGENTIC_RATIO:-0.15}"                               # state->action->result exemplars
   if ! python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
         --teacher "$teacher" --limit "${LIMIT:-400}" \
-        --variants "${VARIANTS:-1}" --refusal-ratio "$rr" "${ap[@]}"; then
+        --variants "${VARIANTS:-1}" --refusal-ratio "$rr" --agentic-ratio "$ar" "${ap[@]}"; then
     echo "==> distill with $teacher failed (OOM/serving) — falling back to $fb"
     python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
       --teacher "$fb" --limit "${LIMIT:-400}" \
-      --variants "${VARIANTS:-1}" --refusal-ratio "$rr" "${ap[@]}"
+      --variants "${VARIANTS:-1}" --refusal-ratio "$rr" --agentic-ratio "$ar" "${ap[@]}"
   fi
 }
 # Gemma-4/MedGemma are multimodal: their processor imports timm (vision) and
