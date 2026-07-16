@@ -63,10 +63,58 @@ def gen_google(system, user, model):
     return r.text or ""
 
 
+# --- auto-discovery: ask each provider what it OFFERS, pick the strongest, log it -----
+# Preference tiers (best -> worst); newest wins within a tier (reverse lexical sort). This
+# stays current without hard-coding an id that may 404, and logs the exact id for the record.
+_PREF = {
+    "anthropic": [r"opus-4", r"opus", r"sonnet-4", r"sonnet"],
+    "openai":    [r"gpt-5\.\d", r"gpt-5", r"o[45]", r"o3", r"gpt-4\.\d", r"gpt-4o"],
+    "google":    [r"gemini-3.*pro", r"gemini-2\.5-pro", r"gemini.*pro", r"gemini.*flash"],
+}
+_BAD = __import__("re").compile(
+    r"embed|tts|whisper|image|dall|realtime|audio|moderation|search|transcribe|vision|tuning|nano",
+    __import__("re").IGNORECASE)
+
+
+def list_model_ids(provider):
+    try:
+        if provider == "anthropic":
+            import anthropic
+            return [m.id for m in anthropic.Anthropic().models.list().data]
+        if provider == "openai":
+            from openai import OpenAI
+            return [m.id for m in OpenAI().models.list().data]
+        if provider == "google":
+            from google import genai
+            return [m.name.split("/")[-1] for m in genai.Client().models.list()]
+    except Exception as e:  # noqa: BLE001
+        print(f"    [{provider}] models.list failed ({type(e).__name__}: {e}); using default.")
+    return []
+
+
+def pick_best(provider, ids):
+    """Within the best matching preference tier, prefer the FLAGSHIP (not mini/lite) and
+    the newest version. Returns the chosen id, or None."""
+    import re
+    light = re.compile(r"mini|lite|nano|small|flash-8b|haiku", re.IGNORECASE)
+
+    def rank(i):
+        nums = [int(n) for n in re.findall(r"\d+", i)][:4]
+        nums += [0] * (4 - len(nums))
+        return (1 if light.search(i) else 0,) + tuple(-n for n in nums)
+
+    cand = [i for i in ids if not _BAD.search(i)]
+    for pat in _PREF.get(provider, []):
+        hits = [i for i in cand if re.search(pat, i, re.IGNORECASE)]
+        if hits:
+            return sorted(hits, key=rank)[0]
+    return sorted(cand, key=rank)[0] if cand else None
+
+
 PROVIDERS = [
-    ("anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "claude-opus-4-8", gen_anthropic),
-    ("openai",    "OPENAI_API_KEY",    "OPENAI_MODEL",    "gpt-5",           gen_openai),
-    ("google",    "GOOGLE_API_KEY",    "GOOGLE_MODEL",    "gemini-2.5-pro",  gen_google),
+    ("anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "claude-opus-4-8",  gen_anthropic),
+    ("openai",    "OPENAI_API_KEY",    "OPENAI_MODEL",    "gpt-5",            gen_openai),
+    ("google",    "GOOGLE_API_KEY",    "GOOGLE_MODEL",    "gemini-2.5-pro",   gen_google),
 ]
 
 
@@ -89,10 +137,15 @@ def main():
         if not os.environ.get(key_env):
             print(f"==> {name}: {key_env} not set — skipping.")
             continue
-        model = os.environ.get(model_env, default_model)
+        pinned = os.environ.get(model_env)
+        if pinned:
+            model = pinned
+            print(f"==> {name}: pinned model='{model}'")
+        else:
+            model = pick_best(name, list_model_ids(name)) or default_model
+            print(f"==> {name}: auto-selected strongest available model='{model}' "
+                  f"(set {model_env} to pin a specific id)")
         active.append((name, model, fn))
-        print(f"==> {name}: enabled, model='{model}' "
-              f"(set {model_env} to pin the exact id; logged for the record)")
     if not active:
         print("==> No frontier API keys set — nothing to generate. (Open comparators still run.)")
         return
