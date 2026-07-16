@@ -38,5 +38,5 @@ MCQ="data/benchmark/mcq.jsonl"
 python scripts/benchmark.py --benchmark "$BENCH" --from-registry "$RUN" \
     --paraphrases "${PARAPHRASES:-1}" \
     ${EXTRA:+--extra-registry "$EXTRA"} \
-    "${PRE[@]}" \
+    ${PRE[@]+"${PRE[@]}"} \
     $( [ -f "$MCQ" ] && echo "--mcq $MCQ" )
