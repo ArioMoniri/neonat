@@ -24,6 +24,13 @@ fi
 # via API, then folded into the SAME leaderboard with --precomputed. Non-fatal.
 PRE=()
 if [ -n "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
+  # Install ONLY the SDKs for providers whose key is set (not in the base install, to
+  # keep setup lean). Idempotent + non-fatal.
+  pkgs=""
+  [ -n "${ANTHROPIC_API_KEY:-}" ] && pkgs="$pkgs anthropic"
+  [ -n "${OPENAI_API_KEY:-}" ]    && pkgs="$pkgs openai"
+  [ -n "${GOOGLE_API_KEY:-}" ]    && pkgs="$pkgs google-genai"
+  if [ -n "$pkgs" ]; then echo "==> Ensuring API SDKs:$pkgs"; pip install -q $pkgs || true; fi
   echo "==> Generating frontier API comparator cards (keys detected)..."
   if python scripts/api_comparators.py --benchmark "$BENCH" \
         --out data/benchmark/api_outputs.jsonl; then
