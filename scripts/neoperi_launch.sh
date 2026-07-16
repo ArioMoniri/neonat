@@ -104,7 +104,9 @@ if [ -z "${NO_TMUX:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&
   exec tmux new-session -A -s "$SESS" \
     "cd '$PROJECT'; NO_TMUX=1 MODELS='${MODELS:-}' \
      SOURCES='${SOURCES:-}' LIMIT='${LIMIT:-}' PER_TOPIC='${PER_TOPIC:-}' \
-     VARIANTS='${VARIANTS:-}' TEACHER='${TEACHER:-}' EPOCHS='${EPOCHS:-}' \
+     VARIANTS='${VARIANTS:-}' TEACHER='${TEACHER:-}' TEACHER_FALLBACK='${TEACHER_FALLBACK:-}' \
+     REFUSAL_RATIO='${REFUSAL_RATIO:-}' APPEND='${APPEND:-}' EPOCHS='${EPOCHS:-}' \
+     NCBI_API_KEY='${NCBI_API_KEY:-}' NCBI_EMAIL='${NCBI_EMAIL:-}' \
      LORA_R='${LORA_R:-}' RUN='$RUN' bash scripts/neoperi_launch.sh '$STAGE'; \
      echo; echo '[stage $STAGE finished — press enter to close]'; read _"
 fi
@@ -113,20 +115,34 @@ fi
 source "$PROJECT/env.sh"; set +u; source "$PROJECT/.venv/bin/activate"; set -u
 
 run_corpus() {
-  echo "### [corpus] building open-literature corpus"
+  echo "### [corpus] building open-literature corpus (PMC/EuropePMC passages + HF TR dilution)"
+  local srcs="${SOURCES:-europepmc,pubmed,hfds}"
   local extra=(); [ -n "${URLS_FILE:-}" ] && extra+=(--urls "$URLS_FILE")
+  # hfds/urls/exa need explicit license consent; the user opted into HF TR dilution,
+  # so pass it unless ACCEPT_UNVETTED=0. (dilution rows are role!='grounded', never a kaynak.)
+  if echo ",$srcs," | grep -qiE ',(hfds|urls|exa),' && [ "${ACCEPT_UNVETTED:-1}" != "0" ]; then
+    extra+=(--accept-unvetted-license)
+  fi
   python scripts/build_corpus.py --out "$CORPUS" \
-    --sources "${SOURCES:-europepmc,pubmed}" --limit "${LIMIT:-400}" \
+    --sources "$srcs" --limit "${LIMIT:-400}" \
     --per-topic "${PER_TOPIC:-8}" "${extra[@]}"
 }
 run_distill() {
-  echo "### [distill] teacher -> grounded TR cards"
+  echo "### [distill] teacher -> grounded + refusal TR cards"
   mig_teacher_guard || exit 1
   [ -f "$CORPUS" ] || run_corpus
   local ap=(); [ "${APPEND:-0}" = "1" ] && ap=(--append)   # grow, don't overwrite
-  python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
-    --teacher "${TEACHER:-Qwen/Qwen2.5-72B-Instruct}" --limit "${LIMIT:-400}" \
-    --variants "${VARIANTS:-1}" "${ap[@]}"
+  local teacher="${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}"   # apache-2.0 primary
+  local fb="${TEACHER_FALLBACK:-Qwen/Qwen3-32B}"                   # apache-2.0 dense fallback
+  local rr="${REFUSAL_RATIO:-0.25}"                                # ~1:3 refusal:grounded
+  if ! python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
+        --teacher "$teacher" --limit "${LIMIT:-400}" \
+        --variants "${VARIANTS:-1}" --refusal-ratio "$rr" "${ap[@]}"; then
+    echo "==> distill with $teacher failed (OOM/serving) — falling back to $fb"
+    python scripts/synthesize_cards.py --passages "$CORPUS" --out "$SYNTH" \
+      --teacher "$fb" --limit "${LIMIT:-400}" \
+      --variants "${VARIANTS:-1}" --refusal-ratio "$rr" "${ap[@]}"
+  fi
 }
 # Gemma-4/MedGemma are multimodal: their processor imports timm (vision) and
 # librosa/soundfile (audio) even for text-only use, and Gemma-4 needs a very recent
@@ -174,7 +190,7 @@ run_mcq() {
   # possible (avoids self-grading; set MCQ_TEACHER to override).
   python scripts/build_mcq.py --passages "$CORPUS" --train "$SYNTH" \
     --grounded data/benchmark/benchmark.jsonl \
-    --teacher "${MCQ_TEACHER:-${TEACHER:-Qwen/Qwen2.5-72B-Instruct}}" --n "${MCQ_N:-100}" \
+    --teacher "${MCQ_TEACHER:-Qwen/Qwen3-32B}" --n "${MCQ_N:-100}" \
     --out data/benchmark/mcq.jsonl || echo "==> MCQ build skipped/failed (non-fatal)."
 }
 run_bench() {
@@ -213,11 +229,23 @@ preflight() {
   memmb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
   disk="$(df -Pk "$PROJECT" | awk 'NR==2{printf "%.0f", $4/1024/1024}')"
   echo "  GPU: ${gpu:-none}  (${memmb:-?} MiB)     free disk: ${disk:-?} GiB"
-  echo "  Teacher: ${TEACHER:-Qwen/Qwen2.5-72B-Instruct}"
+  echo "  Teacher: ${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}  (fallback ${TEACHER_FALLBACK:-Qwen/Qwen3-32B})"
   echo "  Students: $(planned_students)"
   echo "  HF token: $([ -n "${HF_TOKEN:-}" ] && echo present || echo 'absent (gated models will be skipped)')"
+  echo "  Sources: ${SOURCES:-europepmc,pubmed,hfds}   refusal-ratio: ${REFUSAL_RATIO:-0.25}"
+  # NCBI key wizard: higher-rate PMC/EuropePMC/PubMed pulls (optional). Prompt once,
+  # interactively, if PMC/PubMed sources are planned and no key is set.
+  if echo ",${SOURCES:-europepmc,pubmed,hfds}," | grep -qiE ',(pubmed|europepmc|pmc),' \
+       && [ -z "${NCBI_API_KEY:-}" ] && [ -t 0 ]; then
+    printf "  NCBI_API_KEY not set — paste one for faster PMC pulls (Enter to skip): "
+    read -r _k; [ -n "$_k" ] && export NCBI_API_KEY="$_k"
+    if [ -n "${NCBI_API_KEY:-}" ] && [ -z "${NCBI_EMAIL:-}" ]; then
+      printf "  NCBI_EMAIL (polite-access identifier, Enter to skip): "
+      read -r _e; [ -n "$_e" ] && export NCBI_EMAIL="$_e"
+    fi
+  fi
   # Teacher fit check — offer to downshift if it won't fit.
-  local t="${TEACHER:-Qwen/Qwen2.5-72B-Instruct}"
+  local t="${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}"
   if [ -n "$memmb" ]; then
     if echo "$t" | grep -qiE '235b' && [ "$memmb" -lt 130000 ]; then
       echo "  ! $t needs ~130GB; this GPU has ${memmb}MiB."

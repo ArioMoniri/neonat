@@ -192,13 +192,18 @@ def src_europepmc(rows, seen, topics, per_topic, pause, max_total):
 
 def src_pubmed(rows, seen, topics, per_topic, pause, max_total):
     eutils = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    # NCBI E-utilities: an API key raises the rate limit 3->10 req/s; email is the
+    # polite-access identifier. Both optional; appended to every eutils call.
+    _key = os.environ.get("NCBI_API_KEY", "").strip()
+    _email = os.environ.get("NCBI_EMAIL", "").strip()
+    auth = (f"&api_key={_key}" if _key else "") + (f"&email={urllib.parse.quote(_email)}" if _email else "")
     for topic in topics:
         if len(rows) >= max_total:
             return
         try:
             q = urllib.parse.quote(topic)
             s = json.loads(_get(
-                f"{eutils}/esearch.fcgi?db=pubmed&retmode=json&retmax={per_topic}&term={q}"))
+                f"{eutils}/esearch.fcgi?db=pubmed&retmode=json&retmax={per_topic}&term={q}{auth}"))
             ids = s.get("esearchresult", {}).get("idlist", [])
         except Exception as e:  # noqa: BLE001
             print(f"    [pubmed] esearch failed for '{topic}': {e}")
@@ -206,7 +211,7 @@ def src_pubmed(rows, seen, topics, per_topic, pause, max_total):
         if not ids:
             continue
         try:
-            xml = _get(f"{eutils}/efetch.fcgi?db=pubmed&retmode=xml&id={','.join(ids)}")
+            xml = _get(f"{eutils}/efetch.fcgi?db=pubmed&retmode=xml&id={','.join(ids)}{auth}")
             root = ET.fromstring(xml)
         except Exception as e:  # noqa: BLE001
             print(f"    [pubmed] efetch failed for '{topic}': {e}")

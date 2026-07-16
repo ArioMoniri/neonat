@@ -3,5 +3,10 @@
 # Check each dataset's license/card before use. Swap freely.
 alibayram/turkish-hospital-medical-articles
 umutertugrul/turkish-hospital-medical-articles
+# --- consensus TR medical DILUTION (role!=grounded; never fills a citable kaynak) ---
+# License-tagged register-diversity only; peds/OB-GYN/neonatal rows up-weighted by the
+# RELEVANCE filter, subsampled+capped by src_hfds. Verify each card's license before use.
+turkerberkdonmez/TUSGPT-TR-Medical-Dataset-v1
+kayrab/patient-doctor-qa-tr-321179
 # tugrulkaya/Turkish-clinicalNER
 # nezahatkorkmaz/turkish-medical-vqa-evaluated
