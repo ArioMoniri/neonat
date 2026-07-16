@@ -26,9 +26,17 @@ echo "=================================================================="
 
 # 1) clone or hard-update to latest (survives a dirty/stale checkout)
 if [ -d "$PROJECT/.git" ]; then
-  echo "==> Updating existing checkout to origin/$BRANCH"
+  echo "==> Updating existing git checkout to origin/$BRANCH"
   git -C "$PROJECT" fetch origin "$BRANCH"
-  git -C "$PROJECT" checkout -q "$BRANCH" 2>/dev/null || git -C "$PROJECT" checkout -qB "$BRANCH" "origin/$BRANCH"
+  git -C "$PROJECT" reset --hard "origin/$BRANCH"
+elif [ -d "$PROJECT" ] && [ -n "$(ls -A "$PROJECT" 2>/dev/null)" ]; then
+  # Existing NON-git dir (e.g. scp'd files) — adopt it in place so .hf_cache/.venv are
+  # preserved (no multi-hour weight re-download). Tracked repo files are force-updated;
+  # untracked caches/generated data are left alone.
+  echo "==> Adopting existing non-git $PROJECT in place (preserving caches/venv)"
+  git -C "$PROJECT" init -q
+  git -C "$PROJECT" remote add origin "$REPO_URL" 2>/dev/null || git -C "$PROJECT" remote set-url origin "$REPO_URL"
+  git -C "$PROJECT" fetch origin "$BRANCH"
   git -C "$PROJECT" reset --hard "origin/$BRANCH"
 else
   echo "==> Cloning $REPO_URL -> $PROJECT"
