@@ -25,6 +25,10 @@ echo "                    project=$PROJECT  stage=$STAGE  clean=${CLEAN:-0}"
 echo "=================================================================="
 
 # 1) clone or hard-update to latest (survives a dirty/stale checkout)
+# Git 2.35+ refuses a repo owned by another uid ("dubious ownership") — allow this one.
+git config --global --add safe.directory "$PROJECT" 2>/dev/null || true
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 if [ -d "$PROJECT/.git" ]; then
   echo "==> Updating existing git checkout to origin/$BRANCH"
   git -C "$PROJECT" fetch origin "$BRANCH"
@@ -46,15 +50,13 @@ fi
 cd "$PROJECT"
 echo "==> code version: $(grep -m1 NEOPERI_VERSION scripts/train_lora.py | sed 's/.*= *//')"
 
-# 2) optional clean of a previous run on the SAME device
+# 2) optional clean of a previous run on the SAME device (fast; rm only)
 if [ "${CLEAN:-0}" = "1" ]; then
   CACHE="${CACHE:-0}" VENV="${VENV:-0}" bash scripts/clean_run.sh
 fi
 
-# 3) venv + deps (idempotent; installs the transformers>=4.60 stack that loads Qwen3/Gemma-4)
-bash scripts/setup_server.sh
-
-# 4) run — setup wrote env.sh; the launcher self-activates the venv, runs the interactive
-#    preflight/key-wizard, and re-execs itself inside tmux so an SSH drop can't kill it.
-echo "==> Launching stage '$STAGE'"
+# 3) run — the launcher re-execs itself INSIDE tmux first, then (inside tmux) runs
+#    setup_server.sh if the venv is missing and activates it. So pip install, model
+#    downloads, and training ALL happen inside tmux+venv and survive an SSH drop.
+echo "==> Launching stage '$STAGE' (setup + venv + run all happen inside tmux)"
 exec bash scripts/neoperi_launch.sh "$STAGE"

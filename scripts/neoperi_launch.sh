@@ -115,6 +115,14 @@ if [ -z "${NO_TMUX:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&
      echo; echo '[stage $STAGE finished — press enter to close]'; read _"
 fi
 
+# First run (or fresh checkout): build the venv + install deps HERE — we are now INSIDE
+# tmux — so the long pip install survives an SSH drop too. Idempotent: skipped once the
+# venv + env.sh exist.
+if [ ! -f "$PROJECT/env.sh" ] || [ ! -d "$PROJECT/.venv" ]; then
+  echo "==> First run: building venv + installing dependencies (inside tmux) ..."
+  bash "$PROJECT/scripts/setup_server.sh"
+fi
+
 # shellcheck disable=SC1091
 source "$PROJECT/env.sh"; set +u; source "$PROJECT/.venv/bin/activate"; set -u
 
