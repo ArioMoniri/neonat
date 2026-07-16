@@ -159,7 +159,7 @@ def cmd_promote(args):
             existing.add(h)
             out_fh.write(json.dumps(r, ensure_ascii=False) + "\n")
             card = json.loads(r["messages"][-1]["content"])
-            w.writerow([ts, args.infile, h, card.get("kaynak", ""), args.reviewer or ""])
+            w.writerow([ts, args.infile, h, card.get("kaynak") or "", args.reviewer or ""])
             written += 1
 
     print(f"==> Promoted {written} new reviewed+grounded row(s) -> {args.out}")

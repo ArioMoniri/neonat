@@ -97,7 +97,7 @@ def main():
     ap.add_argument("--passages", default="data/corpus/passages.jsonl")
     ap.add_argument("--train", default="data/processed/task_sft.synth.full.jsonl")
     ap.add_argument("--grounded", default="data/benchmark/benchmark.jsonl")
-    ap.add_argument("--teacher", default="Qwen/Qwen2.5-72B-Instruct")
+    ap.add_argument("--teacher", default="Qwen/Qwen3-32B")   # apache-2.0 (launcher passes MCQ_TEACHER)
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--out", default="data/benchmark/mcq.jsonl")
     ap.add_argument("--dry-run", action="store_true")

@@ -377,7 +377,8 @@ def build_orpo_trainer(model, tokenizer, train_ds, eval_ds, peft_config):
         lr_scheduler_type="cosine",
         logging_steps=5,
         bf16=bf16_ok, fp16=not bf16_ok,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,   # already enabled at model load (prepare_model_for_kbit_training);
+                                        # mirrors train_lora.py — one source of truth, no double-enable
         max_grad_norm=1.0,
         optim="paged_adamw_8bit",
         report_to="none",

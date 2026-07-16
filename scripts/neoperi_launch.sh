@@ -102,14 +102,16 @@ if [ -z "${NO_TMUX:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&
   SESS="neoperi"
   echo "==> Launching in tmux session '$SESS' (detach: Ctrl-b d; reattach: tmux attach -t $SESS)"
   exec tmux new-session -A -s "$SESS" \
-    "cd '$PROJECT'; NO_TMUX=1 MODELS='${MODELS:-}' \
+    "cd '$PROJECT'; NO_TMUX=1 PROFILE='${PROFILE:-}' MODELS='${MODELS:-}' \
      SOURCES='${SOURCES:-}' LIMIT='${LIMIT:-}' PER_TOPIC='${PER_TOPIC:-}' \
      VARIANTS='${VARIANTS:-}' TEACHER='${TEACHER:-}' TEACHER_FALLBACK='${TEACHER_FALLBACK:-}' \
      REFUSAL_RATIO='${REFUSAL_RATIO:-}' AGENTIC_RATIO='${AGENTIC_RATIO:-}' APPEND='${APPEND:-}' EPOCHS='${EPOCHS:-}' \
+     LORA_R='${LORA_R:-}' LORA_ALPHA='${LORA_ALPHA:-}' MAXSEQ='${MAXSEQ:-}' \
+     MCQ_N='${MCQ_N:-}' GROUNDED='${GROUNDED:-}' PARAPHRASES='${PARAPHRASES:-}' MCQ_TEACHER='${MCQ_TEACHER:-}' \
      NCBI_API_KEY='${NCBI_API_KEY:-}' NCBI_EMAIL='${NCBI_EMAIL:-}' \
      ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' OPENAI_API_KEY='${OPENAI_API_KEY:-}' GOOGLE_API_KEY='${GOOGLE_API_KEY:-}' \
      ANTHROPIC_MODEL='${ANTHROPIC_MODEL:-}' OPENAI_MODEL='${OPENAI_MODEL:-}' GOOGLE_MODEL='${GOOGLE_MODEL:-}' \
-     LORA_R='${LORA_R:-}' RUN='$RUN' bash scripts/neoperi_launch.sh '$STAGE'; \
+     RUN='$RUN' bash scripts/neoperi_launch.sh '$STAGE'; \
      echo; echo '[stage $STAGE finished — press enter to close]'; read _"
 fi
 
@@ -160,7 +162,8 @@ ensure_gemma_deps() {
 }
 # Abort early if a 235B teacher is asked for on a too-small (MIG) GPU.
 mig_teacher_guard() {
-  case "${TEACHER:-}" in *235B*|*235b*) ;; *) return 0 ;; esac
+  # Resolve the SAME default run_distill applies, so the guard isn't bypassed when unset.
+  case "${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}" in *235B*|*235b*) ;; *) return 0 ;; esac
   local freemb
   freemb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
   if [ -n "$freemb" ] && [ "$freemb" -lt 130000 ]; then
@@ -235,7 +238,7 @@ preflight() {
   echo "  Teacher: ${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}  (fallback ${TEACHER_FALLBACK:-Qwen/Qwen3-32B})"
   echo "  Students: $(planned_students)"
   echo "  HF token: $([ -n "${HF_TOKEN:-}" ] && echo present || echo 'absent (gated models will be skipped)')"
-  echo "  Sources: ${SOURCES:-europepmc,pubmed,hfds}   refusal-ratio: ${REFUSAL_RATIO:-0.25}"
+  echo "  Sources: ${SOURCES:-europepmc,pubmed,hfds}   refusal-ratio: ${REFUSAL_RATIO:-0.25}   agentic-ratio: ${AGENTIC_RATIO:-0.15}"
   # NCBI key wizard: higher-rate PMC/EuropePMC/PubMed pulls (optional). Prompt once,
   # interactively, if PMC/PubMed sources are planned and no key is set.
   if echo ",${SOURCES:-europepmc,pubmed,hfds}," | grep -qiE ',(pubmed|europepmc|pmc),' \

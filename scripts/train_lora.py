@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-14-agentic-statetrack-api"
+NEOPERI_VERSION = "2026-07-16-refusal-scoring-fix"
 
 
 def hf_dtype_kwargs():
@@ -927,7 +927,11 @@ def _flag_ungrounded(tuned_text):
         card = json.loads(tuned_text)
     except Exception:  # noqa: BLE001
         return "output is not valid card JSON"
-    if str(card.get("kaynak", "")).strip():
+    # A refusal card (karar='refusal', kaynak null) is the CORRECT response to an empty
+    # passage and MAY ask clarifying questions — never flag it as fabrication.
+    if str(card.get("karar", "grounded")) == "refusal":
+        return ""
+    if str(card.get("kaynak") or "").strip():
         return "FABRICATED kaynak from an empty passage (grounding failure)"
     if card.get("onerilen_sorular") or card.get("onerilen_tetkikler"):
         return "suggestions produced from an empty passage (ungrounded)"

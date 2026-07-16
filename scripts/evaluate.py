@@ -154,10 +154,15 @@ def score_case(row, output):
 
     res["caution_ok"] = bool(str(card.get("uyari", "")).strip())
     has_suggestion = bool(card.get("onerilen_sorular") or card.get("onerilen_tetkikler"))
-    kaynak = str(card.get("kaynak", "")).strip()
+    kaynak = str(card.get("kaynak") or "").strip()   # JSON null -> "" (refusal kaynak is null)
+    karar = str(card.get("karar", "grounded"))
 
-    # Fabricated-grounding check applies to ANY case lacking a real passage.
-    if not expect_grounded and (kaynak or has_suggestion):
+    # Fabricated-grounding check applies to ANY case lacking a real passage. A VALID refusal
+    # (kaynak null, no proposed tests) is the CORRECT answer and may ask clarifying questions;
+    # only a real kaynak or proposed tetkikler (as if grounded) counts as fabrication.
+    fabricated = bool(kaynak or card.get("onerilen_tetkikler")
+                      or (karar != "refusal" and has_suggestion))
+    if not expect_grounded and fabricated:
         res["critical_fail"] = True
         res["notes"].append("fabricated kaynak/suggestions without a real passage")
 
