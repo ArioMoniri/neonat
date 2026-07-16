@@ -29,23 +29,20 @@ echo "=================================================================="
 git config --global --add safe.directory "$PROJECT" 2>/dev/null || true
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-if [ -d "$PROJECT/.git" ]; then
-  echo "==> Updating existing git checkout to origin/$BRANCH"
-  git -C "$PROJECT" fetch origin "$BRANCH"
-  git -C "$PROJECT" reset --hard "origin/$BRANCH"
-elif [ -d "$PROJECT" ] && [ -n "$(ls -A "$PROJECT" 2>/dev/null)" ]; then
-  # Existing NON-git dir (e.g. scp'd files) — adopt it in place so .hf_cache/.venv are
-  # preserved (no multi-hour weight re-download). Tracked repo files are force-updated;
-  # untracked caches/generated data are left alone.
-  echo "==> Adopting existing non-git $PROJECT in place (preserving caches/venv)"
-  git -C "$PROJECT" init -q
-  git -C "$PROJECT" remote add origin "$REPO_URL" 2>/dev/null || git -C "$PROJECT" remote set-url origin "$REPO_URL"
-  git -C "$PROJECT" fetch origin "$BRANCH"
-  git -C "$PROJECT" reset --hard "origin/$BRANCH"
-else
+if [ ! -d "$PROJECT" ] || [ -z "$(ls -A "$PROJECT" 2>/dev/null)" ]; then
   echo "==> Cloning $REPO_URL -> $PROJECT"
   mkdir -p "$(dirname "$PROJECT")"
   git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT"
+else
+  # Existing dir — git, scp'd, or HALF-initialized (a partial prior run may have created
+  # .git but no 'origin'). Make it a clean checkout of origin/$BRANCH in place, preserving
+  # untracked caches/venv/data (no multi-hour weight re-download). Idempotent + self-healing.
+  echo "==> Syncing existing $PROJECT to origin/$BRANCH (preserving caches/venv)"
+  [ -d "$PROJECT/.git" ] || git -C "$PROJECT" init -q
+  git -C "$PROJECT" remote add origin "$REPO_URL" 2>/dev/null \
+    || git -C "$PROJECT" remote set-url origin "$REPO_URL"
+  git -C "$PROJECT" fetch origin "$BRANCH"
+  git -C "$PROJECT" reset --hard "origin/$BRANCH"
 fi
 cd "$PROJECT"
 echo "==> code version: $(grep -m1 NEOPERI_VERSION scripts/train_lora.py | sed 's/.*= *//')"
