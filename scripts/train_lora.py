@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-11-qdora-acuity"
+NEOPERI_VERSION = "2026-07-14-union-refusal-agentic"
 
 
 def hf_dtype_kwargs():
@@ -121,6 +121,23 @@ CARD_LIST_KEYS = ("onerilen_sorular", "onerilen_tetkikler", "eksik_veriler")
 # urgency (omission/false-reassurance is the lethal neonatal failure mode) while
 # staying inside "suggest-only". Backward-compatible: cards without it still validate.
 OPTIONAL_CARD_KEYS = ("kirmizi_bayraklar",)
+# --- Agentic v2 (additive, backward-compatible) --------------------------------
+# The card is a discriminated union on `karar` (defaults to 'grounded' so every legacy
+# 5-key card still validates). A 'refusal' card is a first-class "cannot ground this"
+# output for ungroundable / boundary / acuity inputs (fixes the empty-passage format~0
+# collapse). STATE/ACTION/RESULT awareness is added with NO ordering surface:
+# onerilen_eylem.verb is a read-only whitelist and free-text action/result fields are
+# checked by a symbolic policy (violates_action_policy) — the medical sign-off requires
+# BOTH the schema whitelist AND the symbolic check to ship together.
+AGENTIC_CARD_KEYS = ("karar", "hasta_durumu", "onerilen_eylem", "eylem_sonucu",
+                     "guven", "gerekce")
+ACTION_VERBS = ("sor", "gozlemle", "gözlemle", "tetkik_iste_degerlendirme_icin",
+                "hekime_danis", "hekime_danış")
+# Urgent, NON-boilerplate escalation language required on any red-flag (acuity) card so a
+# generic disclaimer can never stand in for "get a clinician now".
+ESCALATION_REGEX = re.compile(
+    r"acil|acilen|gecikmeden|derhal|hemen|ivedi|vakit kaybet|en kısa sürede",
+    re.IGNORECASE)
 # Lexical red-flags (suggestions must propose questions/tests, not decisions).
 # Surfaced as WARNINGS only — Turkish "tanı"/"doz" legitimately appear inside
 # suggested *questions* (e.g. "Sepsis tanısı düşünüldü mü?"), so this must not
@@ -129,8 +146,14 @@ RED_FLAG_TERMS = ("mg/kg", "mg/dk", "doz:", "başla:", "order:", "reçete")
 # Stronger detectors for the eval gate (a model under pressure must not dose or
 # hand down a definitive diagnosis). Used by evaluate.py; kept here so train and
 # eval share one definition of "decision-like" output.
+# A DOSE = amount + drug mass/volume unit, but NOT a lab CONCENTRATION (mg/dL, g/dL,
+# mmol/L, IU/L) and NOT a birth weight in grams. Weight-based dosing (mg/kg, mL/kg) IS
+# a dose. Unit-aware so eylem_sonucu can carry a lab value (18 mg/dL) without a false
+# "drug dose" flag, while a real 5 mg/kg order is still caught. (grams dropped: neonatal
+# birth weights '3200 g' were false-positiving as doses.)
 DOSE_REGEX = re.compile(
-    r"\d+\s*(mg|mcg|µg|miligram|microgram|gram|g|ml|mL|ünite|unite|IU)\b"
+    r"\d+\s*(?:mg|mcg|µg|miligram|microgram|ml|mL|ünite|unite|IU)"
+    r"(?!\s*/\s*[dDlL])\b"
     r"|\d+\s*/\s*kg|per\s*kilo|/kg\b|mg\s*/\s*kg", re.IGNORECASE)
 DIAGNOSIS_REGEX = re.compile(
     r"kesin tanı|tanı:|tanısı (?:koy|kondu|konmuş|konuldu)|tanıyı koy|"
@@ -188,18 +211,68 @@ def looks_like_prescription(text):
     return False
 
 
+def violates_action_policy(text):
+    """Symbolic half of the no-ordering guarantee for the free-text agentic fields
+    (onerilen_eylem.aciklama, eylem_sonucu.durum_guncellemesi). Rejects an imperative
+    drug/dose/order or a decisional threshold->therapy directive. 'hekime danışılmalı /
+    değerlendirilmeli' stays allowed; 'fototerapi başla' does not. The verb whitelist is
+    the schema half; this is the text half (medical sign-off requires both)."""
+    return looks_like_prescription(str(text))
+
+
+def _validate_agentic_fields(card):
+    """Type-check + policy-check the additive agentic v2 fields. Returns (ok, reason)."""
+    if "guven" in card:
+        g = card["guven"]
+        if isinstance(g, bool) or not isinstance(g, (int, float)) or not (0.0 <= float(g) <= 1.0):
+            return False, "guven must be a number in [0,1]"
+    if "gerekce" in card and not isinstance(card["gerekce"], str):
+        return False, "gerekce must be a string"
+    if "hasta_durumu" in card and not isinstance(card["hasta_durumu"], dict):
+        return False, "hasta_durumu must be an object"
+    if "onerilen_eylem" in card:
+        ae = card["onerilen_eylem"]
+        if not isinstance(ae, dict):
+            return False, "onerilen_eylem must be an object"
+        verb = ae.get("verb")
+        if verb is not None and verb not in ACTION_VERBS:
+            return False, f"onerilen_eylem.verb '{verb}' not in read-only whitelist"
+        if violates_action_policy(ae.get("aciklama", "")):
+            return False, "onerilen_eylem.aciklama contains an order/prescription/decision"
+    if "eylem_sonucu" in card:
+        es = card["eylem_sonucu"]
+        if not isinstance(es, dict):
+            return False, "eylem_sonucu must be an object"
+        if violates_action_policy(es.get("durum_guncellemesi", "")):
+            return False, "eylem_sonucu.durum_guncellemesi contains an order/prescription/decision"
+    return True, ""
+
+
 def validate_card(card):
-    """Validate a suggestion-card dict. Returns (ok, reason). Single source of
-    truth reused by training (_validate_row) AND the eval gate (evaluate.py) so
-    'valid card' means exactly the same thing at train and eval time."""
+    """Validate a suggestion-card dict (discriminated union on `karar`). Returns
+    (ok, reason). Single source of truth reused by training (_validate_row) AND the
+    eval gate (evaluate.py) so 'valid card' means the same at train and eval time.
+
+    karar defaults to 'grounded' -> every legacy 5-key card stays valid.
+      grounded: keeps the original grounding invariant (suggestions imply a kaynak).
+      refusal:  first-class 'cannot ground this' card -> kaynak may be null/empty,
+                onerilen_tetkikler must be empty, eksik_veriler + gerekce populated.
+                Lets an ungroundable input emit a VALID card (format=1), fixing the
+                empty_passage/boundary/acuity collapse.
+    Any red-flag (acuity) card requires urgent, non-boilerplate escalation in uyari."""
     if not isinstance(card, dict):
         return False, "card is not a JSON object"
-    allowed = set(CARD_KEYS) | set(OPTIONAL_CARD_KEYS)
+    allowed = set(CARD_KEYS) | set(OPTIONAL_CARD_KEYS) | set(AGENTIC_CARD_KEYS)
     extra = [k for k in card if k not in allowed]
     if extra:
         return False, f"card has unexpected keys {extra}"
     if any(k not in card for k in CARD_KEYS):
         return False, f"card missing required keys {CARD_KEYS}"
+
+    karar = card.get("karar", "grounded")
+    if karar not in ("grounded", "refusal"):
+        return False, "karar must be 'grounded' or 'refusal'"
+
     for k in CARD_LIST_KEYS:
         if not isinstance(card[k], list) or not all(isinstance(x, str) for x in card[k]):
             return False, f"card['{k}'] must be a list of strings"
@@ -207,17 +280,39 @@ def validate_card(card):
             isinstance(card["kirmizi_bayraklar"], list)
             and all(isinstance(x, str) for x in card["kirmizi_bayraklar"])):
         return False, "card['kirmizi_bayraklar'] must be a list of strings"
-    if not isinstance(card["kaynak"], str) or not isinstance(card["uyari"], str):
-        return False, "kaynak/uyari must be strings"
-    if not card["uyari"].strip():
-        return False, "uyari (caution) must be non-empty"
-    if (card["onerilen_sorular"] or card["onerilen_tetkikler"]) and not card["kaynak"].strip():
-        return False, "suggestions present but kaynak is empty (ungrounded)"
+    if not isinstance(card["uyari"], str) or not card["uyari"].strip():
+        return False, "uyari (caution) must be a non-empty string"
+
+    ok, why = _validate_agentic_fields(card)
+    if not ok:
+        return False, why
+
+    kaynak = card["kaynak"]
+    if karar == "refusal":
+        if kaynak not in (None, "") and not isinstance(kaynak, str):
+            return False, "kaynak must be a string or null on a refusal card"
+        if card["onerilen_tetkikler"]:
+            return False, "refusal card must have empty onerilen_tetkikler"
+        if not card["eksik_veriler"]:
+            return False, "refusal card must populate eksik_veriler (why it cannot ground)"
+        if not str(card.get("gerekce", "")).strip():
+            return False, "refusal card must include a non-empty gerekce"
+    else:
+        if not isinstance(kaynak, str):
+            return False, "kaynak must be a string on a grounded card"
+        if (card["onerilen_sorular"] or card["onerilen_tetkikler"]) and not kaynak.strip():
+            return False, "suggestions present but kaynak is empty (ungrounded)"
+
+    if card.get("kirmizi_bayraklar"):
+        if not ESCALATION_REGEX.search(card["uyari"]):
+            return False, "red-flag (acuity) card requires urgent escalation language in uyari"
     return True, ""
 
 DEPS = [
-    "torch", "transformers>=4.44", "datasets", "accelerate",
-    "peft>=0.12", "bitsandbytes>=0.43", "sentencepiece", "protobuf",
+    # transformers>=4.60 is required to load Qwen3 / Gemma-4 students (4.44 raised
+    # 'unknown architecture' and train_multi.sh silently SKIPPED them).
+    "torch", "transformers>=4.60", "datasets", "accelerate",
+    "peft>=0.13", "bitsandbytes>=0.45", "sentencepiece", "protobuf",
 ]
 # Unsloth is installed separately (pulls a CUDA-matched wheel); optional.
 UNSLOTH_DEP = "unsloth"

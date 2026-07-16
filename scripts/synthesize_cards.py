@@ -153,8 +153,97 @@ def build_row(card, vignette, passage, src):
             "source": "auto", "teacher": src.get("teacher"),
             "passage_id": src.get("passage_id"), "passage_source": src.get("source"),
             "license": src.get("license"), "url": src.get("url"),
-            "variant": src.get("variant", 0),
+            "variant": src.get("variant", 0), "category": src.get("category", "grounded"),
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# REFUSAL partition: the fix for the empty_passage/boundary/acuity collapse.
+# The teacher authors a first-class "cannot ground this" card (karar='refusal',
+# kaynak=null) so the student learns to abstain in valid-card form instead of
+# fabricating a citation. Blended ~1:3 refusal:grounded (--refusal-ratio).
+# ---------------------------------------------------------------------------
+ESCALATION_UYARI = ("Gecikmeden acil hekim/yenidoğan değerlendirmesi gereklidir; "
+                    "bu kart klinik karar yerine geçmez.")
+REFUSAL_SCENARIOS = ("empty", "boundary", "acuity")
+REFUSAL_TEACHER_SYSTEM = (
+    "Sen Türkçe tıbbi veri etiketleme uzmanısın. Görevin, modelin GÜVENLE "
+    "TEMELLENDİREMEYECEĞİ bir durum için geçerli bir 'RET kartı' (refusal card) "
+    "üretmek. SADECE geçerli JSON üret. Sana bir senaryo tipi verilecek: "
+    "(empty) yeterli/ilgili kılavuz pasajı yok; (boundary) kullanıcı tanı/doz/"
+    "kesin karar dayatıyor ama verilmemeli; (acuity) vinyette gecikmeye tahammülü "
+    "olmayan acil bulgular var. Kurallar: 'karar' değeri 'refusal' olmalı; ASLA "
+    "tanı koyma, ilaç/doz/order verme; 'onerilen_tetkikler' BOŞ liste olmalı; "
+    "'eksik_veriler' neden temellendirilemediğini ve hangi kritik verinin "
+    "gerektiğini listelemeli (boş olamaz); 'gerekce' kısa Türkçe açıklama olmalı; "
+    "'kaynak' null olmalı; acil bulgu varsa 'kirmizi_bayraklar' doldur ve 'uyari' "
+    "GECİKMEDEN acil hekim/yenidoğan değerlendirmesi istemeli (ör. 'gecikmeden acil "
+    "hekim değerlendirmesi gereklidir'). Şema: {\"karar\":\"refusal\",\"vignette\":"
+    "\"...\",\"onerilen_sorular\":[],\"onerilen_tetkikler\":[],\"eksik_veriler\":"
+    "[...],\"gerekce\":\"...\",\"kirmizi_bayraklar\":[],\"kaynak\":null,\"uyari\":\"...\"}")
+
+
+def build_refusal_prompt(scenario, passage):
+    kind = {
+        "empty": ("Senaryo tipi: empty. İlgili/yeterli kılavuz pasajı YOK. Aşağıdaki "
+                  "metin ya boş ya da soruyla ilgisiz:"),
+        "boundary": ("Senaryo tipi: boundary. Kullanıcı kesin tanı veya ilaç/doz "
+                     "istiyor; bu verilmemeli. Pasaj kesin kararı desteklemiyor:"),
+        "acuity": ("Senaryo tipi: acuity. Vinyette gecikmeye tahammülü olmayan acil "
+                   "bulgular var; öncelik acil hekim değerlendirmesine yönlendirmek:"),
+    }[scenario]
+    body = (passage or "(boş)").strip()
+    return (f"{kind}\n\"\"\"\n{body[:1500]}\n\"\"\"\n\n"
+            f"Yukarıdaki şemada SADECE JSON olarak bir RET kartı üret.")
+
+
+def teacher_generate_refusal(model, tok, scenario, passage, max_new_tokens=512):
+    import torch
+    msgs = [{"role": "system", "content": REFUSAL_TEACHER_SYSTEM},
+            {"role": "user", "content": build_refusal_prompt(scenario, passage)}]
+    enc = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                  return_tensors="pt", return_dict=True)
+    dev = model.get_input_embeddings().weight.device
+    enc = {k: v.to(dev) for k, v in enc.items()}
+    n_in = enc["input_ids"].shape[1]
+    with torch.no_grad():
+        out = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=True,
+                             temperature=0.7, top_p=0.9,
+                             pad_token_id=(tok.pad_token_id or tok.eos_token_id),
+                             eos_token_id=tok.eos_token_id)
+    return tok.decode(out[0][n_in:], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+
+
+def to_refusal_card(obj, scenario):
+    """Coerce a teacher object into a schema-valid refusal card (kaynak=null)."""
+    if not isinstance(obj, dict):
+        return None
+    def _lst(key, cap=8):
+        v = obj.get(key, [])
+        if isinstance(v, str):
+            v = [v]
+        return [str(x).strip() for x in (v or []) if str(x).strip()][:cap]
+    eksik = _lst("eksik_veriler") or ["Güvenli temellendirme için yeterli/ilgili kılavuz verisi yok."]
+    kirmizi = _lst("kirmizi_bayraklar")
+    gerekce = str(obj.get("gerekce") or "").strip() or \
+        "Verilen bilgi güvenli, kılavuza dayalı bir öneri için yetersiz."
+    uyari = str(obj.get("uyari") or "").strip()
+    # Acuity refusals MUST carry urgent escalation language (validator enforces it).
+    if kirmizi and not TL.ESCALATION_REGEX.search(uyari):
+        uyari = ESCALATION_UYARI
+    if not uyari:
+        uyari = ("Bu durumda güvenli öneri verilemez; eksik veriler tamamlanmalı ve "
+                 "hekime danışılmalıdır.")
+    return {
+        "karar": "refusal",
+        "onerilen_sorular": _lst("onerilen_sorular"),
+        "onerilen_tetkikler": [],                       # refusal -> empty by contract
+        "eksik_veriler": eksik,
+        "kaynak": None,                                 # ungroundable -> no citation
+        "uyari": uyari,
+        "kirmizi_bayraklar": kirmizi,
+        "gerekce": gerekce,
     }
 
 
@@ -198,11 +287,17 @@ def main():
     ap = argparse.ArgumentParser(description="Distill grounded TR cards with a teacher LLM.")
     ap.add_argument("--passages", required=True)
     ap.add_argument("--out", default="data/processed/task_sft.synth.jsonl")
-    ap.add_argument("--teacher", default="Qwen/Qwen2.5-72B-Instruct")
+    ap.add_argument("--teacher", default="Qwen/Qwen3-32B",
+                    help="distillation teacher (launcher passes Qwen3-235B primary / "
+                         "Qwen3-32B fallback). apache-2.0 teachers give clean distill rights")
     ap.add_argument("--limit", type=int, default=400, help="max passages to process")
     ap.add_argument("--variants", type=int, default=1,
                     help="cards to generate PER passage (multiplies dataset size; "
                          "temperature sampling makes them diverse). e.g. 3 -> ~3x data")
+    ap.add_argument("--refusal-ratio", type=float, default=0.25,
+                    help="fraction of the final set that is REFUSAL cards (empty/"
+                         "boundary/acuity) — teaches valid abstention. 0.25 -> ~1:3 "
+                         "refusal:grounded. Set 0 to disable.")
     ap.add_argument("--max-new-tokens", type=int, default=1024,
                     help="raise if cards get truncated (vignette+lists can be long)")
     ap.add_argument("--dry-run", action="store_true",
@@ -227,11 +322,26 @@ def main():
                 "onerilen_tetkikler": ["Total serum bilirubin"],
                 "eksik_veriler": ["gebelik haftası"],
                 "kaynak": pid, "uyari": DEFAULT_UYARI}, ensure_ascii=False)
+
+        def gen_ref(scenario, passage):
+            return json.dumps({
+                "karar": "refusal",
+                "vignette": "Sentetik vinyet: bilgi yetersiz.",
+                "onerilen_sorular": [], "onerilen_tetkikler": [],
+                "eksik_veriler": ["gebelik haftası", "muayene bulguları"],
+                "gerekce": "Yeterli/ilgili kılavuz verisi yok.",
+                "kirmizi_bayraklar": (["letarji"] if scenario == "acuity" else []),
+                "kaynak": None,
+                "uyari": (ESCALATION_UYARI if scenario == "acuity"
+                          else "Eksik veriler tamamlanmalı; hekime danışılmalıdır.")},
+                ensure_ascii=False)
         teacher_name = f"{args.teacher} (dry-run stub)"
     else:
         model, tok = load_teacher(args.teacher)
         gen = lambda passage, pid: teacher_generate(  # noqa: E731
             model, tok, passage, pid, args.max_new_tokens)
+        gen_ref = lambda scenario, passage: teacher_generate_refusal(  # noqa: E731
+            model, tok, scenario, passage, min(args.max_new_tokens, 640))
         teacher_name = args.teacher
         # PREFLIGHT: generate ONE card and surface the REAL error/traceback before
         # grinding the whole corpus. A failure here shows exactly what's wrong.
@@ -329,6 +439,56 @@ def main():
                 kept += 1
             if i % 25 == 0 or i == len(passages):
                 print(f"    [{i}/{len(passages)}] kept={kept} dropped={dropped} {drops}")
+
+        # ---- REFUSAL partition (empty/boundary/acuity abstention exemplars) ----
+        rr = max(0.0, min(0.9, args.refusal_ratio))
+        refusal_target = int(round(kept * rr / (1 - rr))) if rr > 0 and kept > 0 else 0
+        if refusal_target:
+            import random as _random
+            _random.seed(0)
+            print(f"==> Generating ~{refusal_target} REFUSAL card(s) "
+                  f"(ratio {rr:.2f} -> ~1:{max(1, round((1 - rr) / rr))} refusal:grounded)")
+            r_made, attempts = 0, 0
+            while r_made < refusal_target and attempts < refusal_target * 6 + 20:
+                attempts += 1
+                scenario = REFUSAL_SCENARIOS[attempts % len(REFUSAL_SCENARIOS)]
+                src_p = passages[_random.randrange(len(passages))]
+                passage_txt = "" if scenario == "empty" else src_p.get("passage", "")
+                try:
+                    raw = gen_ref(scenario, passage_txt)
+                except Exception:  # noqa: BLE001
+                    drops["refusal_gen"] = drops.get("refusal_gen", 0) + 1
+                    if drops["refusal_gen"] == 1:
+                        traceback.print_exc()
+                    continue
+                obj = extract_json(raw)
+                card = to_refusal_card(obj, scenario) if obj else None
+                if card is None:
+                    drops["refusal_invalid"] = drops.get("refusal_invalid", 0) + 1
+                    continue
+                ok, _reason = TL.validate_card(card)
+                if not ok:
+                    drops["refusal_invalid"] = drops.get("refusal_invalid", 0) + 1
+                    continue
+                blob = json.dumps(card, ensure_ascii=False)
+                if TL.looks_like_prescription(blob):
+                    drops["prescribe"] += 1
+                    continue
+                cat = ("acuity" if scenario == "acuity"
+                       else "empty_passage" if scenario == "empty" else "boundary_pressure")
+                vignette = (obj.get("vignette") or "Sentetik hasta bağlamı (temellendirilemez)")
+                row = build_row(card, vignette,
+                                (passage_txt or "(ilgili/yeterli kılavuz pasajı yok)"),
+                                {**src_p, "teacher": teacher_name, "variant": 0, "category": cat})
+                line = json.dumps(row, ensure_ascii=False)
+                if line[:400] in seen_global:
+                    drops["dup"] += 1
+                    continue
+                seen_global.add(line[:400])
+                out_fh.write(line + "\n")
+                kept += 1
+                r_made += 1
+            print(f"==> refusal cards written: {r_made}/{refusal_target}  drops={drops}")
 
     if kept == 0:
         sys.exit("ABORT: no valid cards produced. Drop reasons: "

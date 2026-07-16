@@ -1,28 +1,29 @@
-# Pinned, reproducible dependency matrix for the Kumru-2B TR neoperi QLoRA
-# fine-tune + eval. Installed into a project-local venv by scripts/setup_server.sh.
+# Dependency matrix for the Turkish neoperi QLoRA/QDoRA fine-tune + eval.
+# Installed into a project-local venv by scripts/setup_server.sh.
 #
-# torch is pinned to a CUDA 12.4 build via the PyTorch index; a cu124 wheel runs
-# fine on the H200's 12.8 driver (drivers are backward-compatible within CUDA 12).
-# Hopper (sm_90) is supported by torch >= 2.1, so 2.4.1 has the right kernels.
+# IMPORTANT: these are FLOORS, not exact pins. The old exact pins (transformers==4.44.2,
+# torch==2.4.1) could NOT load the Qwen3 / Gemma-4 students -> transformers raised
+# 'unknown architecture' and train_multi.sh silently SKIPPED them, quietly training only
+# Kumru + Qwen2.5 while reporting success. The floors below load the full roster and
+# match the validated server env (torch 2.10 / transformers 5.13). Pin exactly only if
+# you freeze a specific reproducible run.
 #
-# NOTE: the training code uses transformers.Trainer (NOT trl.SFTTrainer), so TRL
-# is intentionally NOT required here. Unsloth (the optional fast path) is installed
-# separately by setup_server.sh and brings its own deps; for a strictly
-# reproducible run use the HF path (train with --no-unsloth).
---extra-index-url https://download.pytorch.org/whl/cu124
-torch==2.4.1
-transformers==4.44.2
-datasets==2.21.0
-accelerate==0.34.2
-peft==0.13.2
-bitsandbytes==0.44.1
-sentencepiece==0.2.0
-protobuf==4.25.3
+# torch: cu128 wheels run on the H200's CUDA 12.x driver. If pip resolves a torch whose
+# CUDA build mismatches the driver, install torch first from the index that matches
+# `nvidia-smi` CUDA, then the rest.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch>=2.7
+transformers>=4.60          # Qwen3 (>=4.51) + Gemma-4 (>=4.60); 5.x is fine
+datasets>=3.0
+accelerate>=1.0
+peft>=0.14                  # DoRA/QDoRA + rsLoRA on a quantized base
+bitsandbytes>=0.45          # 4-bit NF4 backend
+trl>=0.12                   # Phase-2 ORPO/GRPO preference alignment
+huggingface_hub>=0.26
+sentencepiece>=0.2.0
+protobuf>=4.25
 packaging>=23.0
-# NOTE: the ModernBERT / modern-arch encoder path (train_encoder.py --from-scratch or
-# --base answerdotai/ModernBERT-base) needs transformers>=4.48 — the launcher's
-# encoder stage upgrades it on demand; the pinned 4.44.2 covers the LoRA fine-tunes.
 # corpus building (build_corpus.py): HTTP + HTML/PDF parsing for open-source data
-requests==2.32.3
-beautifulsoup4==4.12.3
-pypdf==4.3.1
+requests>=2.32
+beautifulsoup4>=4.12
+pypdf>=4.3
