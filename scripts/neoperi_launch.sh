@@ -118,6 +118,18 @@ fi
 # shellcheck disable=SC1091
 source "$PROJECT/env.sh"; set +u; source "$PROJECT/.venv/bin/activate"; set -u
 
+disk_free_gb() { df -Pk "$PROJECT" | awk 'NR==2{printf "%.0f", $4/1024/1024}'; }
+ensure_disk() {   # ensure_disk MIN_GB LABEL — abort before a big download if the SSD is low
+  local free; free="$(disk_free_gb)"
+  if [ -n "$free" ] && [ "$free" -lt "$1" ]; then
+    echo "ERROR: only ${free} GiB free under $PROJECT (need >= ${1} GiB for $2)." >&2
+    echo "       Reclaim: bash scripts/clean_run.sh   (add CACHE=1 to drop model weights)" >&2
+    echo "       or remove an unused model: rm -rf $PROJECT/.hf_cache/hub/models--*" >&2
+    exit 1
+  fi
+  echo "==> disk ok: ${free:-?} GiB free (>= ${1} for $2)"
+}
+
 run_corpus() {
   echo "### [corpus] building open-literature corpus (PMC/EuropePMC passages + HF TR dilution)"
   local srcs="${SOURCES:-europepmc,pubmed,hfds}"
@@ -134,6 +146,7 @@ run_corpus() {
 run_distill() {
   echo "### [distill] teacher -> grounded + refusal TR cards"
   mig_teacher_guard || exit 1
+  ensure_disk "${MIN_DISK_DISTILL:-80}" "distillation (teacher weights + corpus)"
   [ -f "$CORPUS" ] || run_corpus
   local ap=(); [ "${APPEND:-0}" = "1" ] && ap=(--append)   # grow, don't overwrite
   local teacher="${TEACHER:-Qwen/Qwen3-235B-A22B-Instruct-2507}"   # apache-2.0 primary
@@ -181,6 +194,7 @@ ensure_build_tools() {
 }
 run_train() {
   echo "### [train] fine-tune all registry students"
+  ensure_disk "${MIN_DISK_TRAIN:-40}" "training (student weights + adapters)"
   ensure_build_tools
   ensure_gemma_deps
   [ -f "$SYNTH" ] || run_distill

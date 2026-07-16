@@ -105,6 +105,11 @@ export TRANSFORMERS_CACHE="$HF_CACHE"
 export PIP_CACHE_DIR="$PIP_CACHE"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export TOKENIZERS_PARALLELISM=false
+# VRAM: expandable_segments avoids fragmentation OOM on a shared/MIG slice (biggest win).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# RAM: bound CPU thread pools (dataset map/tokenize) so we don't balloon on 100GB.
+export OMP_NUM_THREADS=8
+export HF_DATASETS_IN_MEMORY_MAX_SIZE=0
 EOF
 
 echo "==> Recording environment snapshot"

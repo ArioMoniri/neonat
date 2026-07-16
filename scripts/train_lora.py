@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-16-refusal-scoring-fix"
+NEOPERI_VERSION = "2026-07-16-resource-adaptive"
 
 
 def hf_dtype_kwargs():
@@ -338,28 +338,45 @@ def install_deps():
 # ----------------------------------------------------------------------------
 # GPU check + adaptive batch sizing
 # ----------------------------------------------------------------------------
+def _estimate_billions(model_id):
+    """Best-effort param count (billions) from the HF id, for VRAM-aware batch sizing."""
+    nums = re.findall(r"(\d+(?:\.\d+)?)\s*[bB]\b", str(model_id).replace("-", " "))
+    if nums:
+        return float(nums[-1])                 # e.g. 'Qwen3-14B' -> 14, 'Kumru-2B' -> 2
+    return 2.0 if "kumru" in str(model_id).lower() else 8.0
+
+
 def check_gpu():
+    """Pick batch_size/grad_accum DYNAMICALLY from the visible slice's FREE VRAM and the
+    model size, so we never max out a MIG slice. Uses torch.cuda.mem_get_info() which is
+    MIG-correct (nvidia-smi --query-gpu reports N/A for a MIG instance). Keeps effective
+    batch ~16 (batch*accum)."""
+    free_gb = total_gb = None
     try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free",
-             "--format=csv,noheader,nounits"],
-            text=True,
-        ).strip()
-        print("==> GPU(s):")
-        free_mb = None
-        for line in out.splitlines():
-            name, total, free = [x.strip() for x in line.split(",")]
-            print(f"    {name} | total {total} MiB | free {free} MiB")
-            free_mb = float(free)
-        # MIG slices report N/A for free; nvidia-smi query may give 0/blank -> skip adapt.
-        if free_mb and free_mb < 12000:
-            print("    [adapt] <12 GiB free -> batch_size=1, grad_accum=16")
-            CONFIG["batch_size"], CONFIG["grad_accum"] = 1, 16
-        elif free_mb and free_mb < 24000:
-            print("    [adapt] <24 GiB free -> batch_size=2, grad_accum=8")
-            CONFIG["batch_size"], CONFIG["grad_accum"] = 2, 8
+        import torch
+        if torch.cuda.is_available():
+            free_b, total_b = torch.cuda.mem_get_info()   # per-visible-device (MIG-correct)
+            free_gb, total_gb = free_b / 2**30, total_b / 2**30
+            print(f"==> GPU visible slice: free {free_gb:.1f} GiB / total {total_gb:.1f} GiB")
     except Exception as e:  # noqa: BLE001
-        print(f"==> nvidia-smi unavailable ({e}); proceeding with configured batch size.")
+        print(f"==> torch mem_get_info unavailable ({e}); keeping configured batch.")
+    if free_gb is None:
+        return
+    B = _estimate_billions(CONFIG.get("base_model", ""))
+    # base tier by model size (keeps eff-batch ~16)
+    base_bs = 8 if B <= 3 else 4 if B <= 8 else 2 if B <= 16 else 1
+    # clamp by real headroom: 4-bit weights ~0.7 GB/B + ~5 GB fixed overhead;
+    # per-sample activation at seq<=2048 ~ (0.6 + 0.18*B) GB (conservative).
+    headroom = free_gb - (0.7 * B + 5.0)
+    per_sample = 0.6 + 0.18 * B
+    fit_bs = int(headroom / per_sample) if headroom > per_sample else 1
+    bs = max(1, min(base_bs, fit_bs))
+    accum = max(1, round(16 / bs))
+    CONFIG["batch_size"], CONFIG["grad_accum"] = bs, accum
+    print(f"    [adapt] model~{B:g}B, headroom {headroom:.0f} GiB -> "
+          f"batch_size={bs}, grad_accum={accum} (eff {bs * accum})")
+    if headroom < 6:
+        print("    [warn] tight VRAM headroom on this slice; batch pinned low to avoid OOM.")
 
 
 # ----------------------------------------------------------------------------
