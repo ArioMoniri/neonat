@@ -465,13 +465,20 @@ def main():
     drops = {"gen_error": 0, "no_json": 0, "invalid_card": 0, "prescribe": 0, "dup": 0}
     # --append GROWS an existing set (dedup against what's already there) instead
     # of overwriting — so you never lose already-generated cards.
+    # Dedup on the ASSISTANT CARD content, NOT the row prefix: every row starts with the
+    # same 787-char GUARDRAIL_SYSTEM, so line[:400] was identical for ALL rows -> every card
+    # after the first was dropped as a "dup" (kept=1). Keying on the card fixes the yield.
     mode, seen_global = "w", set()
     if args.append and os.path.exists(args.out):
         mode = "a"
         for line in open(args.out, encoding="utf-8"):
             line = line.strip()
-            if line:
-                seen_global.add(line[:400])
+            if not line:
+                continue
+            try:
+                seen_global.add(json.loads(line)["messages"][-1]["content"])
+            except Exception:  # noqa: BLE001
+                pass
         print(f"==> APPEND mode: {len(seen_global)} existing card(s) kept.")
     with open(args.out, mode, encoding="utf-8") as out_fh:
         for i, p in enumerate(passages, 1):
@@ -527,11 +534,11 @@ def main():
                                 {**p, "teacher": teacher_name, "variant": v,
                                  "category": ("agentic" if ag else "grounded")})
                 line = json.dumps(row, ensure_ascii=False)
-                if line[:400] in seen_global:     # already in the appended file
+                if blob in seen_global:           # dedup on CARD content, not the row prefix
                     drops["dup"] += 1
                     dropped += 1
                     continue
-                seen_global.add(line[:400])
+                seen_global.add(blob)
                 out_fh.write(line + "\n")
                 kept += 1
             if i % 25 == 0 or i == len(passages):
@@ -578,10 +585,10 @@ def main():
                                 (passage_txt or "(ilgili/yeterli kılavuz pasajı yok)"),
                                 {**src_p, "teacher": teacher_name, "variant": 0, "category": cat})
                 line = json.dumps(row, ensure_ascii=False)
-                if line[:400] in seen_global:
+                if blob in seen_global:           # dedup on CARD content, not the row prefix
                     drops["dup"] += 1
                     continue
-                seen_global.add(line[:400])
+                seen_global.add(blob)
                 out_fh.write(line + "\n")
                 kept += 1
                 r_made += 1

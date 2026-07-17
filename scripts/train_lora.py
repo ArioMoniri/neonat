@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 # Bump when shipping a fix; printed at startup so you can SEE which code is live.
-NEOPERI_VERSION = "2026-07-16-hf-only"
+NEOPERI_VERSION = "2026-07-17-dedup-fix"
 
 
 def hf_dtype_kwargs():
