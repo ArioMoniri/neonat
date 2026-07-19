@@ -495,7 +495,7 @@ def load_model_and_tokenizer():
     from peft import (LoraConfig, get_peft_model,
                       prepare_model_for_kbit_training)
 
-    print("==> Loading via Hugging Face + bitsandbytes (fallback path).")
+    print("==> Loading via Hugging Face + bitsandbytes 4-bit (QLoRA).")
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -996,7 +996,7 @@ def main():
 
     print("=" * 78)
     print(f">>> neoperi code version: {NEOPERI_VERSION} <<<")
-    print("Kumru-2B  TR neonatology/perinatology  QLoRA fine-tune")
+    print("TR neonatology/perinatology  QLoRA/QDoRA fine-tune")
     print(f"  base={CONFIG['base_model']}  out={CONFIG['output_dir']}  data={data_path}")
     print(f"  epochs={CONFIG['epochs']}  lora_r={CONFIG['lora_r']}  "
           f"lora_alpha={CONFIG['lora_alpha']}  lr={CONFIG['learning_rate']}  "
