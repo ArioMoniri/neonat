@@ -78,13 +78,18 @@ def generate(model, tok, system, user):
             {"role": "user", "content": user}]
     # On device_map='auto', inputs must sit on the embedding layer's device.
     dev = model.get_input_embeddings().weight.device
-    ids = tok.apply_chat_template(
-        msgs, add_generation_prompt=True, return_tensors="pt").to(dev)
+    # return_dict=True -> a BatchEncoding with input_ids + attention_mask (robust across
+    # tokenizers; a bare return_tensors='pt' yields a BatchEncoding on some transformers 5.x
+    # tokenizers, which model.generate() then mis-handles as inputs_tensor -> .shape crash).
+    enc = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                  return_tensors="pt", return_dict=True)
+    enc = {k: v.to(dev) for k, v in enc.items()}
+    n_in = enc["input_ids"].shape[1]
     with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=320, do_sample=False,
+        out = model.generate(**enc, max_new_tokens=320, do_sample=False,
                              eos_token_id=tok.eos_token_id,
                              pad_token_id=tok.pad_token_id)
-    return tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+    return tok.decode(out[0][n_in:], skip_special_tokens=True).strip()
 
 
 def disjointness_warning(rows, train_path):
